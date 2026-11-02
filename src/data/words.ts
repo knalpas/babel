@@ -1,0 +1,132 @@
+import type { WordId } from '../types'
+
+/**
+ * Three basic words across Indo-European, the classic demonstration of regular
+ * sound change. Reconstructions carry an asterisk. Forms are citation forms
+ * (nominative, or the usual dictionary form); non-Latin scripts are followed
+ * by a romanisation. Gaps mean the form is unattested or uncertain.
+ */
+export const WORDS: { id: WordId; label: string; pie: string }[] = [
+  { id: 'three', label: 'three', pie: '*tréyes' },
+  { id: 'mother', label: 'mother', pie: '*méh₂tēr' },
+  { id: 'night', label: 'night', pie: '*nókʷts' },
+]
+
+type Forms = [three?: string, mother?: string, night?: string]
+
+const F: Record<string, Forms> = {
+  pie: ['*tréyes', '*méh₂tēr', '*nókʷts'],
+  hittite: ['teri-', 'anna-', 'išpant-'],
+  luwian: ['tarri-'],
+  'tocharian-a': ['tre', 'mācar'],
+  'tocharian-b': ['trai', 'mācer'],
+  'proto-greek': ['*trées', '*mā́tēr', '*núkʷs'],
+  'ancient-greek': ['τρεῖς treîs', 'μήτηρ mḗtēr', 'νύξ nýx'],
+  koine: ['τρεῖς treîs', 'μήτηρ mḗtēr', 'νύξ nýx'],
+  greek: ['τρεις tris', 'μητέρα mitéra', 'νύχτα níchta'],
+  'classical-armenian': ['երեք erekʿ', 'մայր mayr', 'գիշեր gišer'],
+  armenian: ['երեք yerekʿ', 'մայր mayr', 'գիշեր gišer'],
+  albanian: ['tre', 'nënë', 'natë'],
+  vedic: ['त्रयः tráyaḥ', 'मातृ mātṛ́', 'नक्त nákta'],
+  sanskrit: ['त्रयः trayaḥ', 'माता mātā', 'रात्रि rātri'],
+  pali: ['tayo', 'mātā', 'ratti'],
+  hindi: ['तीन tīn', 'माँ mā̃', 'रात rāt'],
+  urdu: ['تین tīn', 'ماں mā̃', 'رات rāt'],
+  punjabi: ['ਤਿੰਨ tinn', 'ਮਾਂ mā̃', 'ਰਾਤ rāt'],
+  gujarati: ['ત્રણ traṇ', 'મા mā', 'રાત rāt'],
+  marathi: ['तीन tīn', 'आई āī', 'रात्र rātra'],
+  bengali: ['তিন tin', 'মা mā', 'রাত rāt'],
+  odia: ['ତିନି tini', 'ମା mā', 'ରାତି rāti'],
+  assamese: ['তিনি tini', 'মা mā', 'ৰাতি rāti'],
+  nepali: ['तीन tīn', 'आमा āmā', 'रात rāt'],
+  sinhala: ['තුන tuna', 'අම්මා ammā', 'රාත්‍රිය rātriya'],
+  romani: ['trin', 'dej', 'rat'],
+  avestan: ['θrāiiō', 'mātar-', 'xšap-'],
+  'middle-persian': ['sē', 'mād', 'šab'],
+  persian: ['سه se', 'مادر mādar', 'شب šab'],
+  tajik: ['се se', 'модар modar', 'шаб šab'],
+  ossetian: ['ӕртӕ ærtæ', 'мад mad', 'ӕхсӕв æxsæv'],
+  pashto: ['درې dre', 'مور mor', 'شپه špa'],
+  kurdish: ['sê', 'dayik', 'şev'],
+  'proto-italic': ['*trēs', '*mātēr', '*noktis'],
+  latin: ['trēs', 'māter', 'nox'],
+  oscan: ['trís'],
+  'old-french': ['treis', 'mere', 'nuit'],
+  'anglo-norman': ['treis', 'mere', 'nuit'],
+  'middle-french': ['trois', 'mere', 'nuit'],
+  french: ['trois', 'mère', 'nuit'],
+  'haitian-creole': ['twa', 'manman', 'lannwit'],
+  occitan: ['tres', 'maire', 'nuèch'],
+  catalan: ['tres', 'mare', 'nit'],
+  'old-spanish': ['tres', 'madre', 'noche'],
+  spanish: ['tres', 'madre', 'noche'],
+  ladino: ['tres', 'madre', 'noche'],
+  'galician-portuguese': ['tres', 'madre', 'noite'],
+  portuguese: ['três', 'mãe', 'noite'],
+  galician: ['tres', 'nai', 'noite'],
+  italian: ['tre', 'madre', 'notte'],
+  sardinian: ['tres', 'mama', 'note'],
+  romansh: ['trais', 'mamma', 'notg'],
+  romanian: ['trei', 'mamă', 'noapte'],
+  aromanian: ['trei', 'mumă', 'noapti'],
+  'proto-celtic': ['*trīs', '*mātīr', '*noxts'],
+  gaulish: ['tri-', 'matir'],
+  welsh: ['tri', 'mam', 'nos'],
+  cornish: ['tri', 'mamm', 'nos'],
+  breton: ['tri', 'mamm', 'noz'],
+  'old-irish': ['trí', 'máthair', 'adaig'],
+  'middle-irish': ['trí', 'máthair', 'adaig'],
+  irish: ['trí', 'máthair', 'oíche'],
+  'scottish-gaelic': ['trì', 'màthair', 'oidhche'],
+  manx: ['tree', 'moir', 'oie'],
+  'proto-germanic': ['*þrīz', '*mōdēr', '*nahts'],
+  gothic: ['𐌸𐍂𐌴𐌹𐍃 þreis', '𐌰𐌹𐌸𐌴𐌹 aiþei', '𐌽𐌰𐌷𐍄𐍃 nahts'],
+  'old-norse': ['þrír', 'móðir', 'nótt'],
+  icelandic: ['þrír', 'móðir', 'nótt'],
+  faroese: ['tríggir', 'móðir', 'nátt'],
+  norwegian: ['tre', 'mor', 'natt'],
+  danish: ['tre', 'mor', 'nat'],
+  swedish: ['tre', 'mor', 'natt'],
+  'proto-west-germanic': ['*þrī', '*mōdar', '*naht'],
+  'old-english': ['þrīe', 'mōdor', 'niht'],
+  'middle-english': ['thre', 'moder', 'night'],
+  english: ['three', 'mother', 'night'],
+  scots: ['three', 'mither', 'nicht'],
+  'old-frisian': ['thrē', 'mōder', 'nacht'],
+  'west-frisian': ['trije', 'mem', 'nacht'],
+  'old-saxon': ['thria', 'mōdar', 'naht'],
+  'middle-low-german': ['drê', 'môder', 'nacht'],
+  'low-german': ['dree', 'Moder', 'Nacht'],
+  'old-high-german': ['drī', 'muoter', 'naht'],
+  'middle-high-german': ['drî', 'muoter', 'naht'],
+  german: ['drei', 'Mutter', 'Nacht'],
+  yiddish: ['דרײַ dray', 'מאַמע mame', 'נאַכט nakht'],
+  'middle-dutch': ['drie', 'moeder', 'nacht'],
+  dutch: ['drie', 'moeder', 'nacht'],
+  afrikaans: ['drie', 'moeder', 'nag'],
+  lithuanian: ['trys', 'motina', 'naktis'],
+  latvian: ['trīs', 'māte', 'nakts'],
+  'proto-slavic': ['*trьje', '*mati', '*noťь'],
+  'old-church-slavonic': ['трие trije', 'мати mati', 'нощь noštĭ'],
+  'old-east-slavic': ['трие trie', 'мати mati', 'ночь nočĭ'],
+  russian: ['три tri', 'мать matʹ', 'ночь nočʹ'],
+  ukrainian: ['три try', 'мати maty', 'ніч nič'],
+  belarusian: ['тры try', 'маці maci', 'ноч noč'],
+  polish: ['trzy', 'matka', 'noc'],
+  czech: ['tři', 'matka', 'noc'],
+  slovak: ['tri', 'matka', 'noc'],
+  slovene: ['tri', 'mati', 'noč'],
+  'serbo-croatian': ['tri', 'majka', 'noć'],
+  bulgarian: ['три tri', 'майка majka', 'нощ nošt'],
+  macedonian: ['три tri', 'мајка majka', 'ноќ noḱ'],
+}
+
+const INDEX: Record<WordId, number> = { three: 0, mother: 1, night: 2 }
+
+export function wordFor(langId: string, word: WordId): string | undefined {
+  return F[langId]?.[INDEX[word]]
+}
+
+export function hasWords(langId: string): boolean {
+  return langId in F
+}
