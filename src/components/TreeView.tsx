@@ -1,12 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { select } from 'd3-selection'
-import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom'
-import 'd3-transition'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { WordId } from '../types'
 import { byId, childrenOf, isAlive, lineage } from '../data'
 import { wordFor } from '../data/words'
 import { AXIS_TICKS, MAX_YEAR, clampYear, formatYearShort, fractionToYear } from '../lib/time'
-import { CHART_W, PAD_L, ROW_H, TRACK_W, buildLayout, xOf, type Layout } from '../lib/layout'
+import { BAR_DY, HEADER_H, PAD_L, PAD_R, buildLayout, makeX, sectionOf, type Layout } from '../lib/layout'
 
 type Props = {
   year: number
@@ -17,7 +14,11 @@ type Props = {
   onYear: (y: number) => void
 }
 
-const AXIS_H = 30
+const AXIS_H = 32
+const MIN_TRACK = 700
+const MAX_TRACK = 9000
+const PHONE_TRACK = 1000
+const PANEL_W = 412
 
 function descendants(id: string, out = new Set<string>()): Set<string> {
   for (const k of childrenOf.get(id) ?? []) {
@@ -28,81 +29,134 @@ function descendants(id: string, out = new Set<string>()): Set<string> {
 }
 
 export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }: Props) {
-  const layout = useMemo(() => buildLayout(), [])
-  const svgRef = useRef<SVGSVGElement>(null)
-  const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null)
-  const [t, setT] = useState<ZoomTransform>(zoomIdentity)
-  const tRef = useRef(t)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1200 : window.innerWidth))
+  const [trackW, setTrackW] = useState<number | null>(null)
+  const [scrollLeft, setScrollLeft] = useState(0)
+  const anchor = useRef<{ f: number; px: number } | null>(null)
+  const pendingFocus = useRef(false)
 
+  const layout = useMemo(() => buildLayout(collapsed), [collapsed])
+  const isPhone = vw < 760
+  const fitW = Math.max(MIN_TRACK, vw - PAD_L - PAD_R - 8)
+  const tw = trackW ?? (isPhone ? PHONE_TRACK : fitW)
+  const x = useMemo(() => makeX(tw), [tw])
+  // Room to scroll the far end of history out from under the detail panel.
+  const width = PAD_L + tw + PAD_R + (selectedId && !isPhone ? PANEL_W : 0)
+
+  // Viewport width, for fitting and the phone layout.
   useEffect(() => {
-    const svg = svgRef.current
-    if (!svg) return
-    const z = zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.2, 3])
-      .filter((e: Event) => {
-        // Let a plain wheel pan vertically like a document; zoom with ctrl/pinch.
-        if (e.type === 'wheel') return (e as WheelEvent).ctrlKey || (e as WheelEvent).metaKey
-        return !(e as MouseEvent).button
-      })
-      .on('zoom', (e) => {
-        tRef.current = e.transform
-        setT(e.transform)
-      })
-    zoomRef.current = z
-    const sel = select(svg)
-    sel.call(z).on('dblclick.zoom', null)
-    sel.on('wheel.pan', (e: WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) return
-      e.preventDefault()
-      z.translateBy(sel, -e.deltaX / tRef.current.k, -e.deltaY / tRef.current.k)
-    }, { passive: false })
-
-    // Open readable: full scale on desktop, framed on the recent past (where
-    // most of the tree is), with the year line in view.
-    const vw = svg.clientWidth || 1000
-    const wide = vw >= 900
-    const k = wide ? 0.9 : 0.62
-    const right = vw - (xOf(MAX_YEAR) + 40) * k
-    const tx = Math.max(right, Math.min(0, vw * 0.5 - xOf(year) * k))
-    sel.call(z.transform, zoomIdentity.translate(tx, AXIS_H).scale(k))
-    return () => {
-      sel.on('.zoom', null).on('wheel.pan', null)
-    }
-    // Initial framing only; later year changes pan via the effect below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setVw(el.clientWidth))
+    ro.observe(el)
+    setVw(el.clientWidth)
+    return () => ro.disconnect()
   }, [])
 
-  // Fly to the selected language.
+  // Track horizontal scroll (throttled to frames) so names can stay readable.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    let raf = 0
+    const onScroll = () => {
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        setScrollLeft(el.scrollLeft)
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      cancelAnimationFrame(raf)
+    }
+  }, [])
+
+  /** Stretch time, keeping the moment under `px` (viewport x) in place. */
+  const zoomTo = useCallback(
+    (next: number, px?: number) => {
+      const el = scrollRef.current
+      if (!el) return
+      const clamped = Math.round(Math.min(MAX_TRACK, Math.max(MIN_TRACK, next)))
+      const at = px ?? el.clientWidth / 2
+      anchor.current = { f: (el.scrollLeft + at - PAD_L) / tw, px: at }
+      setTrackW(clamped)
+    },
+    [tw],
+  )
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const a = anchor.current
+    if (!el || !a) return
+    anchor.current = null
+    el.scrollLeft = PAD_L + a.f * tw - a.px
+    setScrollLeft(el.scrollLeft)
+  }, [tw])
+
+  // Ctrl / ⌘ + wheel (and trackpad pinch, which arrives as ctrl+wheel) zooms time.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return
+      e.preventDefault()
+      const r = el.getBoundingClientRect()
+      zoomTo(tw * Math.exp(-e.deltaY * 0.01), e.clientX - r.left)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [tw, zoomTo])
+
+  // Open with the current year in view.
+  const opened = useRef(false)
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el || opened.current || el.clientWidth === 0) return
+    opened.current = true
+    if (width > el.clientWidth) el.scrollLeft = x(year) - el.clientWidth * 0.5
+    setScrollLeft(el.scrollLeft)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vw])
+
+  // Keep the year line on screen while scrubbing or playing.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const xs = x(year)
+    const m = Math.min(80, el.clientWidth * 0.12)
+    if (xs < el.scrollLeft + m) el.scrollLeft = xs - m
+    else if (xs > el.scrollLeft + el.clientWidth - m) el.scrollLeft = xs - el.clientWidth + m
+    setScrollLeft(el.scrollLeft)
+  }, [year, x])
+
+  // Bring the selected language into view, unfolding its family if needed.
   useEffect(() => {
     if (!focusSeq || !selectedId) return
-    const svg = svgRef.current
-    const z = zoomRef.current
-    const row = layout.rowById.get(selectedId)
-    if (!svg || !z || !row) return
-    const vw = svg.clientWidth || 1000
-    const vh = svg.clientHeight || 700
-    const k = Math.max(tRef.current.k, vw < 700 ? 0.6 : 0.85)
-    const panelW = vw >= 900 ? 400 : 0
-    const xs = xOf(row.lang.start)
-    const tx = Math.min(80 - (xs - 170) * k, (vw - panelW) * 0.42 - xs * k)
-    const ty = (vw < 760 ? vh * 0.18 : vh * 0.42) - row.y * k
-    select(svg)
-      .transition()
-      .duration(650)
-      .call(z.transform, zoomIdentity.translate(tx, ty).scale(k))
-  }, [focusSeq, selectedId, layout])
+    const sec = sectionOf(selectedId)
+    if (collapsed.has(sec)) {
+      const next = new Set(collapsed)
+      next.delete(sec)
+      setCollapsed(next)
+    }
+    pendingFocus.current = true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSeq, selectedId])
 
-  // Keep the year line on screen while scrubbing.
   useEffect(() => {
-    const svg = svgRef.current
-    const z = zoomRef.current
-    if (!svg || !z) return
-    const vw = svg.clientWidth || 1000
-    const sx = tRef.current.applyX(xOf(year))
-    const margin = Math.min(120, vw * 0.15)
-    if (sx < margin) z.translateBy(select(svg), (margin - sx) / tRef.current.k, 0)
-    else if (sx > vw - margin) z.translateBy(select(svg), (vw - margin - sx) / tRef.current.k, 0)
-  }, [year])
+    const el = scrollRef.current
+    if (!pendingFocus.current || !el || !selectedId) return
+    const row = layout.rowById.get(selectedId)
+    if (!row) return
+    pendingFocus.current = false
+    const left = Math.max(0, x(row.lang.start) - (isPhone ? 24 : 120))
+    const top = row.y - (isPhone ? el.clientHeight * 0.16 : el.clientHeight * 0.38)
+    // Glide for short hops; jump straight there across long distances.
+    const far = Math.abs(top - el.scrollTop) > el.clientHeight * 2
+    el.scrollTo({ left, top: Math.max(0, top), behavior: far ? 'auto' : 'smooth' })
+  }, [layout, selectedId, focusSeq, x, isPhone])
 
   const related = useMemo(() => {
     if (!selectedId) return null
@@ -111,107 +165,213 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
     return s
   }, [selectedId])
 
-  const yearX = xOf(year)
-
-  function axisClick(e: React.MouseEvent<SVGRectElement>) {
-    const svg = svgRef.current
-    if (!svg) return
-    const box = svg.getBoundingClientRect()
-    const x = tRef.current.invertX(e.clientX - box.left)
-    onYear(clampYear(fractionToYear((x - PAD_L) / TRACK_W)))
+  function toggle(id: string) {
+    const next = new Set(collapsed)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setCollapsed(next)
   }
+
+  const allFolded = collapsed.size === layout.sections.length
+  function toggleAll() {
+    setCollapsed(allFolded ? new Set() : new Set(layout.sections.map((s) => s.group.id)))
+  }
+
+  // Scrub by pressing or dragging along the axis.
+  function yearAt(clientX: number): number {
+    const el = scrollRef.current!
+    const px = clientX - el.getBoundingClientRect().left + el.scrollLeft
+    return clampYear(fractionToYear((px - PAD_L) / tw))
+  }
+
+  const yearX = x(year)
+  // Drop ticks that would crowd their neighbours (or the "Today" label).
+  const ticks = useMemo(() => {
+    const out: number[] = []
+    let last = -Infinity
+    for (const t of AXIS_TICKS) {
+      if (x(t) - last < 56 || x(MAX_YEAR) - x(t) < 56) continue
+      out.push(t)
+      last = x(t)
+    }
+    return out
+  }, [x])
 
   return (
     <div className="tree">
-      <svg
-        ref={svgRef}
-        className="tree__svg"
-        role="img"
-        aria-label="Time-scaled family tree of languages"
-        onClick={() => onSelect(null)}
-      >
-        <g transform={t.toString()}>
-          <TreeContent
-            layout={layout}
-            year={year}
-            word={word}
-            selectedId={selectedId}
-            related={related}
-            onSelect={onSelect}
-          />
-          <line className="tree__year" x1={yearX} x2={yearX} y1={0} y2={layout.height} />
-        </g>
-
-        {/* Axis pinned to the top, following horizontal pan and zoom only. */}
-        <g className="axis">
-          <rect className="axis__bg" x={0} y={0} width="100%" height={AXIS_H} onClick={(e) => {
-            e.stopPropagation()
-            axisClick(e)
-          }} />
-          {AXIS_TICKS.map((y) => {
-            const x = t.applyX(xOf(y))
-            return (
-              <g key={y} transform={`translate(${x},0)`} className="axis__tick">
-                <line y1={AXIS_H - 6} y2={AXIS_H} />
-                <text y={AXIS_H - 11}>{y === MAX_YEAR ? 'Now' : formatYearShort(y)}</text>
-              </g>
-            )
-          })}
-          <g transform={`translate(${t.applyX(yearX)},0)`} className="axis__now">
-            <path d={`M-6,${AXIS_H - 8}L6,${AXIS_H - 8}L0,${AXIS_H}z`} />
+      <div ref={scrollRef} className="tree__scroll" onClick={() => onSelect(null)}>
+        <svg
+          className="tree__axis"
+          width={width}
+          height={AXIS_H}
+          role="slider"
+          aria-label="Year on the tree"
+          aria-valuenow={year}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId)
+            onYear(yearAt(e.clientX))
+          }}
+          onPointerMove={(e) => {
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) onYear(yearAt(e.clientX))
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <rect className="axis__bg" width={width} height={AXIS_H} />
+          {ticks.map((t) => (
+            <g key={t} transform={`translate(${x(t)},0)`} className="axis__tick">
+              <line y1={AXIS_H - 7} y2={AXIS_H} />
+              <text y={AXIS_H - 13}>{formatYearShort(t)}</text>
+            </g>
+          ))}
+          <g transform={`translate(${x(MAX_YEAR)},0)`} className="axis__tick">
+            <text y={AXIS_H - 13}>Today</text>
           </g>
-        </g>
-      </svg>
-      <p className="tree__hint">Scroll to pan · pinch or ctrl-scroll to zoom · tap the axis to set the year</p>
+          <g transform={`translate(${yearX},0)`} className="axis__now">
+            <path d={`M-6,${AXIS_H - 9}L6,${AXIS_H - 9}L0,${AXIS_H}z`} />
+          </g>
+        </svg>
+
+        <div className="tree__body" style={{ width, height: layout.height }}>
+          <svg className="tree__svg" width={width} height={layout.height} role="img" aria-label="Time-scaled family tree of languages">
+            <Grid x={x} height={layout.height} />
+            <Branches layout={layout} x={x} year={year} selectedId={selectedId} related={related} />
+            <line className="tree__year" x1={yearX} x2={yearX} y1={0} y2={layout.height} />
+            <Labels
+              layout={layout}
+              x={x}
+              year={year}
+              word={word}
+              selectedId={selectedId}
+              related={related}
+              scrollLeft={scrollLeft}
+              onSelect={onSelect}
+            />
+          </svg>
+
+          {layout.sections.map((s) => (
+            <div key={s.group.id} className="section" style={{ top: s.y0, height: HEADER_H }}>
+              <div className="section__head">
+                <button
+                  type="button"
+                  className={`section__btn${s.collapsed ? ' is-collapsed' : ''}`}
+                  aria-expanded={!s.collapsed}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    toggle(s.group.id)
+                  }}
+                >
+                  <span className="section__chev" aria-hidden="true">
+                    ▾
+                  </span>
+                  <span className="dot" style={{ background: s.group.color }} />
+                  <span className="section__label">{s.group.label}</span>
+                  <span className="section__count">{s.count}</span>
+                </button>
+                {s.from && (
+                  <button
+                    type="button"
+                    className="section__from"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onSelect(s.from!.id)
+                    }}
+                  >
+                    from {s.from.name}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className={`tree__tools${selectedId ? ' is-shifted' : ''}`}>
+        <button type="button" onClick={toggleAll}>
+          {allFolded ? 'Unfold all' : 'Fold all'}
+        </button>
+        <span className="tree__tools-sep" />
+        <button type="button" onClick={() => zoomTo(tw / 1.5)} aria-label="Compress time" title="Compress time">
+          −
+        </button>
+        <button type="button" onClick={() => zoomTo(isPhone ? PHONE_TRACK : fitW)} title="Fit all of history">
+          Fit
+        </button>
+        <button type="button" onClick={() => zoomTo(tw * 1.5)} aria-label="Stretch time" title="Stretch time">
+          +
+        </button>
+      </div>
     </div>
   )
 }
 
-type ContentProps = {
+const Grid = memo(function Grid({ x, height }: { x: (y: number) => number; height: number }) {
+  return (
+    <g className="grid">
+      {AXIS_TICKS.map((t) => (
+        <line key={t} x1={x(t)} x2={x(t)} y1={0} y2={height} />
+      ))}
+    </g>
+  )
+})
+
+type BranchProps = {
   layout: Layout
+  x: (y: number) => number
   year: number
-  word: WordId | null
   selectedId: string | null
   related: Set<string> | null
-  onSelect: (id: string | null) => void
 }
 
-const TreeContent = memo(function TreeContent({
-  layout,
-  year,
-  word,
-  selectedId,
-  related,
-  onSelect,
-}: ContentProps) {
+/** Bars, connectors and contact arcs: everything that does not move on scroll. */
+const Branches = memo(function Branches({ layout, x, year, selectedId, related }: BranchProps) {
   const selected = selectedId ? byId.get(selectedId) : undefined
-
   return (
-    <>
-      {layout.bands.map((b, i) => (
-        <g key={b.group.id + i} className="band">
-          <rect
-            className={`band__fill${i % 2 ? ' is-alt' : ''}`}
-            x={0}
-            y={b.y0}
-            width={CHART_W}
-            height={b.y1 - b.y0}
-          />
-          <rect x={0} y={b.y0} width={4} height={b.y1 - b.y0} fill={b.group.color} />
-          <text className="band__label" x={14} y={b.y0 + 15} fill={b.group.color}>
-            {b.group.label}
-          </text>
-        </g>
+    <g>
+      {layout.sections.map((s) => (
+        <line key={s.group.id} className="section__rule" x1={0} x2="100%" y1={s.y0 + 0.5} y2={s.y0 + 0.5} />
       ))}
 
       {layout.connectors.map((c) => {
         const dim = related && !(related.has(c.child.lang.id) && related.has(c.parent.lang.id))
-        const x1 = xOf(c.child.lang.start)
+        const xp = x(c.at)
+        const xc = x(c.child.lang.start)
+        const y0 = c.parent.y + 3
+        const y1 = c.child.y
+        const r = Math.min(8, xc - xp)
+        const d =
+          r < 2
+            ? `M${xp},${y0}V${y1 - 4.5}`
+            : `M${xp},${y0}V${y1 - r}Q${xp},${y1} ${xp + r},${y1}H${xc}`
         return (
-          <g key={c.child.lang.id} className={`conn${dim ? ' is-dim' : ''}`} stroke={c.child.group.color}>
-            <path d={`M${c.x},${c.parent.y}V${c.child.y - 6}Q${c.x},${c.child.y} ${c.x + 6},${c.child.y}H${Math.max(c.x + 6, x1)}`} />
-            {c.gap && (
-              <line className="conn__gap" x1={c.x + 6} x2={x1} y1={c.child.y} y2={c.child.y} />
+          <path
+            key={c.child.lang.id}
+            d={d}
+            className={`conn${c.gap ? ' is-gap' : ''}${dim ? ' is-dim' : ''}`}
+            stroke={c.child.group.color}
+          />
+        )
+      })}
+
+      {layout.rows.map((r) => {
+        const l = r.lang
+        const x0 = x(l.start)
+        const x1 = x(l.end ?? MAX_YEAR)
+        const alive = isAlive(l, year)
+        const dim = related ? !related.has(l.id) : false
+        const sel = l.id === selectedId
+        return (
+          <g
+            key={l.id}
+            className={`bar${alive ? ' is-alive' : ''}${l.proto ? ' is-proto' : ''}${dim ? ' is-dim' : ''}${sel ? ' is-selected' : ''}`}
+            stroke={r.group.color}
+          >
+            {l.afterlife && l.end != null && <line className="bar__after" x1={x1 + 10} x2={x(MAX_YEAR)} y1={r.y} y2={r.y} />}
+            <line className="bar__line" x1={x0} x2={Math.max(x0 + 1, x1)} y1={r.y} y2={r.y} />
+            <circle className="bar__start" cx={x0} cy={r.y} r={sel ? 5.5 : 4.5} fill={r.group.color} />
+            {l.end != null && (
+              <text className="bar__dagger" x={x1 + 3} y={r.y + 4.5}>
+                †
+              </text>
             )}
           </g>
         )
@@ -223,57 +383,67 @@ const TreeContent = memo(function TreeContent({
         if (!from || !to) return null
         const lo = Math.max(from.lang.start, selected.start)
         const hi = Math.min(from.lang.end ?? MAX_YEAR, selected.end ?? MAX_YEAR)
-        const yr = hi >= lo ? (lo + hi) / 2 : selected.start
-        const x = xOf(yr)
-        const bulge = Math.min(260, Math.abs(to.y - from.y) * 0.35 + 40)
+        const xs = x(hi >= lo ? (lo + hi) / 2 : selected.start)
+        const bulge = Math.min(220, Math.abs(to.y - from.y) * 0.3 + 40)
         return (
           <path
             key={`contact-${cid}`}
             className="contact-arc"
-            d={`M${x},${from.y}C${x + bulge},${from.y} ${x + bulge},${to.y} ${x},${to.y}`}
+            d={`M${xs},${from.y}C${xs + bulge},${from.y} ${xs + bulge},${to.y} ${xs},${to.y}`}
           />
         )
       })}
+    </g>
+  )
+})
 
+type LabelProps = BranchProps & {
+  word: WordId | null
+  scrollLeft: number
+  onSelect: (id: string | null) => void
+}
+
+const NAME_W = 7.6 // average px per character at the name size
+
+/** Names sit above their bars and slide along to stay readable while scrolled. */
+function Labels({ layout, x, year, word, selectedId, related, scrollLeft, onSelect }: LabelProps) {
+  const edge = scrollLeft + 12
+  return (
+    <g>
       {layout.rows.map((r) => {
         const l = r.lang
-        const x0 = xOf(l.start)
-        const x1 = xOf(l.end ?? MAX_YEAR)
-        const alive = isAlive(l, year)
-        const isSel = l.id === selectedId
-        const dim = related ? !related.has(l.id) : false
+        const x0 = x(l.start)
+        const x1 = x(l.end ?? MAX_YEAR)
         const w = word ? wordFor(l.id, word) : undefined
+        const textW = l.name.length * NAME_W + (w ? w.length * 7 + 18 : 0)
+        // Slide right with the scroll while the bar is still in view.
+        const nx = x0 < edge && x1 > edge ? edge : x0 - 2
+        const alive = isAlive(l, year)
+        const dim = related ? !related.has(l.id) : false
+        const sel = l.id === selectedId
         return (
           <g
             key={l.id}
-            className={`row${alive ? ' is-alive' : ''}${isSel ? ' is-selected' : ''}${dim ? ' is-dim' : ''}${l.proto ? ' is-proto' : ''}`}
+            className={`name${alive ? ' is-alive' : ''}${l.proto ? ' is-proto' : ''}${dim ? ' is-dim' : ''}${sel ? ' is-selected' : ''}`}
             onClick={(e) => {
               e.stopPropagation()
               onSelect(l.id)
             }}
           >
-            <rect className="row__hit" x={x0 - 200} y={r.y - ROW_H / 2} width={x1 - x0 + 210} height={ROW_H} />
-            {l.afterlife && l.end != null && (
-              <line className="row__afterlife" x1={x1} x2={xOf(MAX_YEAR)} y1={r.y} y2={r.y} stroke={r.group.color} />
-            )}
-            <line className="row__bar" x1={x0} x2={x1} y1={r.y} y2={r.y} stroke={r.group.color} />
-            <circle className="row__start" cx={x0} cy={r.y} r={4} fill={r.group.color} />
-            {l.end != null && (
-              <text className="row__dagger" x={x1 + 4} y={r.y + 4}>
-                †
-              </text>
-            )}
-            <text className="row__name" x={x0 - 9} y={r.y + 4}>
-              {l.name}
+            <rect
+              className="name__hit"
+              x={Math.min(x0, nx) - 8}
+              y={r.y - 22}
+              width={Math.max(x1 - x0, textW + (nx - x0)) + 20}
+              height={30}
+            />
+            <text x={nx} y={r.y - BAR_DY - 3}>
+              <tspan className="name__text">{l.name}</tspan>
+              {w && <tspan className="name__word" dx={9}>{w}</tspan>}
             </text>
-            {w && (
-              <text className="row__word" x={x0 + 8} y={r.y - 5}>
-                {w}
-              </text>
-            )}
           </g>
         )
       })}
-    </>
+    </g>
   )
-})
+}

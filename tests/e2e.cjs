@@ -38,7 +38,8 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     // 1. Default load
     let p = await open('');
     ok('loads tree at 1000', (await yearText(p)) === '1000');
-    ok('tree renders all 248 rows', (await p.$$eval('.row', (r) => r.length)) === 248);
+    ok('tree renders all 248 rows', (await p.$$eval('.name', (r) => r.length)) === 248);
+    ok('tree fits all of history on a desktop screen', await p.$eval('.tree__scroll', (e) => e.scrollWidth <= e.clientWidth + 1));
 
     // 2. Search
     await search(p, 'gael');
@@ -72,22 +73,52 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // 5. Click a row in the tree
     await p.evaluate(() => {
-      const r = [...document.querySelectorAll('.row')].find((g) => g.querySelector('.row__name').textContent === 'English');
+      const r = [...document.querySelectorAll('.name')].find((g) => g.querySelector('.name__text').textContent === 'English');
       r.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await wait(500);
     ok('clicking a tree row selects it', (await panelTitle(p)) === 'English');
     ok('contact arcs drawn (3 for English)', (await p.$$eval('.contact-arc', (a) => a.length)) === 3);
-    ok('unrelated rows are dimmed', (await p.$$eval('.row.is-dim', (a) => a.length)) > 100);
+    ok('unrelated rows are dimmed', (await p.$$eval('.name.is-dim', (a) => a.length)) > 100);
 
-    // 6. Tree pans with wheel
-    const g1 = await p.$eval('.tree__svg > g', (e) => e.getAttribute('transform'));
-    const tb = await (await p.$('.tree__svg')).boundingBox();
+    // 6. Native scrolling, folding, zoom
+    const tb = await (await p.$('.tree__scroll')).boundingBox();
+    const top0 = await p.$eval('.tree__scroll', (e) => e.scrollTop);
     await p.mouse.move(tb.x + 300, tb.y + 300);
-    await p.mouse.wheel({ deltaY: 400 });
+    await p.mouse.wheel({ deltaY: 600 });
+    await wait(400);
+    ok('mouse wheel scrolls the tree', (await p.$eval('.tree__scroll', (e) => e.scrollTop)) > top0);
+    ok('axis stays pinned while scrolling', await p.$eval('.tree__axis', (e) => Math.abs(e.getBoundingClientRect().top - e.parentElement.getBoundingClientRect().top) < 2));
+    const n0 = await p.$$eval('.name', (r) => r.length);
+    await p.evaluate(() => [...document.querySelectorAll('.section__btn')].find((b) => b.textContent.includes('Germanic')).click());
     await wait(300);
-    const g2 = await p.$eval('.tree__svg > g', (e) => e.getAttribute('transform'));
-    ok('wheel pans the tree', g1 !== g2);
+    const n1 = await p.$$eval('.name', (r) => r.length);
+    ok('folding Germanic hides its rows', n1 < n0, `${n0} → ${n1}`);
+    await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fold all').click());
+    await wait(300);
+    ok('Fold all leaves only headers', (await p.$$eval('.name', (r) => r.length)) === 0);
+    await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Unfold all').click());
+    await wait(300);
+    ok('Unfold all restores rows', (await p.$$eval('.name', (r) => r.length)) === 248);
+    const w0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
+    await wait(300);
+    const w1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    ok('+ stretches time', w1 > w0 * 1.3, `${w0} → ${w1}`);
+    ok('stretched tree scrolls sideways', await p.$eval('.tree__scroll', (e) => e.scrollWidth > e.clientWidth));
+    const fs0 = await p.$eval('.name__text', (e) => getComputedStyle(e).fontSize);
+    ok('text size unchanged by zoom', fs0 === '15.5px', fs0);
+    await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fit').click());
+    await wait(300);
+    ok('Fit returns to full view', (await p.$eval('.tree__svg', (e) => +e.getAttribute('width'))) <= w0 + 1);
+    await p.evaluate(() => [...document.querySelectorAll('.section__from')].find((b) => b.closest('.section').textContent.includes('Germanic')).click());
+    await wait(600);
+    ok('“from …” link opens the parent', (await panelTitle(p)) === 'Proto-Indo-European');
+    await p.evaluate(() => {
+      const r = [...document.querySelectorAll('.name')].find((g) => g.querySelector('.name__text').textContent === 'English');
+      r.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await wait(400);
 
     // 7. Timeline
     const box = await (await p.$('.timeline__track')).boundingBox();
@@ -122,7 +153,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     // 8. Word trace
     await p.select('#word-select', 'mother');
     await wait(300);
-    const words = await p.$$eval('.row__word', (w) => w.map((x) => x.textContent));
+    const words = await p.$$eval('.name__word', (w) => w.map((x) => x.textContent));
     ok('word trace labels shown', words.length > 80, words.length + ' labels');
     ok('German “Mutter” shown', words.includes('Mutter'));
     ok('URL reflects state', /word=mother/.test(p.url()) && /lang=english/.test(p.url()), p.url().split('?')[1]);
@@ -180,10 +211,10 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // 12. Every language opens without errors
     p = await open('');
-    const ids = await p.evaluate(() => [...document.querySelectorAll('.row')].length);
+    const ids = await p.evaluate(() => [...document.querySelectorAll('.name')].length);
     let opened = 0;
     for (let i = 0; i < ids; i++) {
-      await p.evaluate((i) => document.querySelectorAll('.row')[i].dispatchEvent(new MouseEvent('click', { bubbles: true })), i);
+      await p.evaluate((i) => document.querySelectorAll('.name')[i].dispatchEvent(new MouseEvent('click', { bubbles: true })), i);
       if (await p.$('.panel__title')) opened++;
     }
     ok('every language opens a panel', opened === ids, `${opened}/${ids}`);
@@ -196,6 +227,24 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok('phone: panel is a bottom sheet', (await p.$eval('.panel', (e) => getComputedStyle(e).left)) === '0px');
     const tl = await (await p.$('.timeline')).boundingBox();
     ok('phone: timeline fully on screen', tl.y + tl.height <= 845);
+    ok('phone: selected row scrolled into view', await p.evaluate(() => {
+      const t = [...document.querySelectorAll('.name.is-selected')][0];
+      const r = t && t.getBoundingClientRect();
+      return !!r && r.top > 0 && r.top < 844 && r.left > -5 && r.left < 390;
+    }));
+    await p.click('.panel__close');
+    await wait(200);
+    const sc = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
+    await p.evaluate(() => { const e = document.querySelector('.tree__scroll'); e.scrollLeft += 300; });
+    await wait(300);
+    ok('phone: tree scrolls sideways', (await p.$eval('.tree__scroll', (e) => e.scrollLeft)) > sc);
+    ok('phone: names stay readable after sideways scroll', await p.evaluate(() => {
+      return [...document.querySelectorAll('.name__text')].every((t) => {
+        const r = t.getBoundingClientRect();
+        if (r.bottom < 240 || r.top > 1300 || r.right < 0) return true;
+        return r.left > -2;
+      });
+    }));
     await p.close();
   } catch (e) {
     results.push('FAIL  test crashed: ' + e.message);
