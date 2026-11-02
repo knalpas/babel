@@ -18,7 +18,7 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
         </button>
         <h2 id="about-title">How to read Babel</h2>
         <p>
-          {LANGUAGES.length} languages across 7,000 years, {living} of them still spoken. Each line in the tree is
+          {LANGUAGES.length} languages across 6,500 years, {living} of them still spoken. Each line in the tree is
           one language’s lifetime; it branches from its parent where it became distinct. Dashed lines are
           reconstructed proto-languages that were never written down. A dagger † marks the last native speakers; a
           faint trail after it means the language lived on in liturgy, scholarship or revival.

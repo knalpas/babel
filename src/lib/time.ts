@@ -5,7 +5,7 @@
 
 export const BC = (bcYear: number): number => 1 - bcYear
 
-export const MIN_YEAR = BC(5000)
+export const MIN_YEAR = BC(4500)
 export const MAX_YEAR = 2026
 
 export function clampYear(y: number): number {
@@ -60,7 +60,7 @@ export function fractionToYear(f: number): number {
 
 /** Ticks that read well on the non-linear axis. */
 export const AXIS_TICKS: number[] = [
-  BC(5000), BC(4000), BC(3000), BC(2000), BC(1500), BC(1000), BC(500),
+  BC(4500), BC(4000), BC(3000), BC(2000), BC(1500), BC(1000), BC(500),
   1, 500, 1000, 1250, 1500, 1750, 2000,
 ]
 

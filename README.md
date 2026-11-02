@@ -1,6 +1,6 @@
 # Babel
 
-A time-scaled family tree and globe of the world's languages: 248 languages across 7,000 years, from Proto-Indo-European on the steppe to the 130-odd still spoken today. A sibling of [Chronoglobe](https://knalpas.github.io/chronoglobe/), [Sceptre](https://knalpas.github.io/kings/) and [Atelier](https://knalpas.github.io/atelier/).
+A time-scaled family tree and globe of the world's languages: 248 languages across 6,500 years, from Proto-Indo-European on the steppe to the 130-odd still spoken today. A sibling of [Chronoglobe](https://knalpas.github.io/chronoglobe/), [Sceptre](https://knalpas.github.io/kings/) and [Atelier](https://knalpas.github.io/atelier/).
 
 **Live:** https://knalpas.github.io/babel/ (after the first deploy)
 
@@ -8,7 +8,7 @@ A time-scaled family tree and globe of the world's languages: 248 languages acro
 
 - **Tree**: a phylogeny with time running left to right on Chronoglobe's non-linear scale. Each line is one language's lifetime, branching from its parent where it became distinct. Dashed lines are reconstructed proto-languages, † marks the last native speakers, and a dotted trail shows a liturgical or revived afterlife.
 - **Globe**: every language spoken in the chosen year, with arcs joining it to its parent. Select one to trace its whole migration path from the root of its family.
-- **Timeline**: scrub, step or play from 5000 BC to today. The curve shows how many languages in the dataset are on record at each moment.
+- **Timeline**: scrub, step or play from 4500 BC to today. The curve shows how many languages in the dataset are on record at each moment.
 - **Detail panel**: dates, status, speakers, script, descent, daughters, and contact links in both directions (Atelier's "inspired by" idea, applied to loanwords: English ← Old Norse, Anglo-Norman, Latin).
 - **Trace a word**: *three*, *mother* and *night* across about 100 Indo-European languages, beside the reconstructed PIE form.
 - Permalinks: `?year=800&lang=old-norse&view=map&word=night` (`?year=44bc` also works).
@@ -29,6 +29,14 @@ npm run deploy
 Builds and pushes `dist/` to the `gh-pages` branch. Vite `base` is `/babel/`.
 
 `npm run build:single` writes one self-contained HTML file to `dist-single/`, handy for sharing a preview without hosting.
+
+## Test
+
+```bash
+npm run build && npx --yes puppeteer browsers install chrome && node tests/e2e.cjs dist/index.html
+```
+
+40 scripted checks covering search, selection, timeline, word tracing, globe, permalinks and phone layout.
 
 ## Data
 
