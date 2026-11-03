@@ -33,6 +33,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
   const [trackW, setTrackW] = useState<number | null>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
   const anchor = useRef<{ f: number; px: number } | null>(null)
+  const touchTap = useRef(false)
   const pendingFocus = useRef(false)
 
   const layout = useMemo(() => buildLayout(collapsed), [collapsed])
@@ -96,6 +97,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
 
   useLayoutEffect(() => {
     const el = scrollRef.current
+    if (previewOn.current) setPreview(null)
     const a = anchor.current
     if (!el || !a) return
     anchor.current = null
@@ -117,25 +119,54 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
     return () => el.removeEventListener('wheel', onWheel)
   }, [zoomTo])
 
-  // Two-finger pinch on phones and tablets stretches or squeezes time.
+  // Two-finger pinch on phones and tablets stretches or squeezes time. While
+  // the fingers move, the drawing is only stretched with a CSS transform (cheap
+  // and smooth); the real re-layout happens once, when the pinch ends.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const axisRef = useRef<SVGSVGElement>(null)
+  const previewOn = useRef(false)
+  const setPreview = useCallback((r: number | null, origin = 0) => {
+    for (const n of [bodyRef.current, axisRef.current]) {
+      if (!n) continue
+      n.style.transformOrigin = r == null ? '' : `${origin}px 0`
+      n.style.transform = r == null ? '' : `scaleX(${r})`
+    }
+    previewOn.current = r != null
+  }, [])
+
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    let pinch: { d0: number; w0: number } | null = null
+    type Pinch = { d0: number; w0: number; mid: number; origin: number; r: number }
+    let pinch: Pinch | null = null
     const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
     const mid = (t: TouchList) => (t[0].clientX + t[1].clientX) / 2 - el.getBoundingClientRect().left
     const onStart = (e: TouchEvent) => {
       if (e.touches.length !== 2) return
       e.preventDefault()
-      pinch = { d0: dist(e.touches), w0: twRef.current }
+      const m = mid(e.touches)
+      pinch = { d0: Math.max(1, dist(e.touches)), w0: twRef.current, mid: m, origin: el.scrollLeft + m, r: 1 }
     }
     const onMove = (e: TouchEvent) => {
       if (!pinch || e.touches.length !== 2) return
-      e.preventDefault()
-      zoomTo(pinch.w0 * (dist(e.touches) / pinch.d0), mid(e.touches))
+      if (e.cancelable) e.preventDefault()
+      const lo = minTrack / pinch.w0
+      const hi = MAX_TRACK / pinch.w0
+      pinch.r = Math.min(hi, Math.max(lo, dist(e.touches) / pinch.d0))
+      setPreview(pinch.r, pinch.origin)
     }
     const onEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) pinch = null
+      if (!pinch || e.touches.length >= 2) return
+      const { w0, r, mid: m, origin } = pinch
+      pinch = null
+      if (Math.abs(r - 1) < 0.01) {
+        setPreview(null)
+        return
+      }
+      // Keep the moment under the fingers in place; the preview is cleared
+      // in the same frame the new layout lands (see the layout effect below).
+      anchor.current = { f: (origin - PAD_L) / w0, px: m }
+      setTrackW(Math.round(w0 * r))
     }
     el.addEventListener('touchstart', onStart, { passive: false })
     el.addEventListener('touchmove', onMove, { passive: false })
@@ -147,7 +178,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
       el.removeEventListener('touchend', onEnd)
       el.removeEventListener('touchcancel', onEnd)
     }
-  }, [zoomTo])
+  }, [minTrack, setPreview])
 
   // Open with the current year in view.
   const opened = useRef(false)
@@ -241,6 +272,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
     <div className="tree">
       <div ref={scrollRef} className="tree__scroll" onClick={() => onSelect(null)}>
         <svg
+          ref={axisRef}
           className="tree__axis"
           width={width}
           height={AXIS_H}
@@ -248,13 +280,19 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
           aria-label="Year on the tree"
           aria-valuenow={year}
           onPointerDown={(e) => {
+            touchTap.current = e.pointerType === 'touch'
+            // On touch screens a swipe here scrolls the tree; only a tap sets the year.
+            if (touchTap.current) return
             e.currentTarget.setPointerCapture(e.pointerId)
             onYear(yearAt(e.clientX))
           }}
           onPointerMove={(e) => {
             if (e.currentTarget.hasPointerCapture(e.pointerId)) onYear(yearAt(e.clientX))
           }}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (touchTap.current) onYear(yearAt(e.clientX))
+          }}
         >
           <rect className="axis__bg" width={width} height={AXIS_H} />
           {ticks.map((t) => (
@@ -271,7 +309,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
           </g>
         </svg>
 
-        <div className="tree__body" style={{ width, height: layout.height }}>
+        <div ref={bodyRef} className="tree__body" style={{ width, height: layout.height }}>
           <svg className="tree__svg" width={width} height={layout.height} role="img" aria-label="Time-scaled family tree of languages">
             <Grid x={x} height={layout.height} />
             <Branches layout={layout} x={x} year={year} selectedId={selectedId} related={related} />
@@ -486,7 +524,11 @@ type LabelProps = BranchProps & {
 
 const NAME_W = 7.6 // average px per character at the name size
 
-/** Names sit above their bars and slide along to stay readable while scrolled. */
+/**
+ * Names sit above their bars and slide along to stay readable while scrolled.
+ * Each row is memoised, so a scroll frame only re-renders the few names that
+ * actually move.
+ */
 function Labels({ layout, x, year, word, selectedId, related, scrollLeft, onSelect }: LabelProps) {
   const edge = scrollLeft + 12
   return (
@@ -495,36 +537,59 @@ function Labels({ layout, x, year, word, selectedId, related, scrollLeft, onSele
         const l = r.lang
         const x0 = x(l.start)
         const x1 = x(l.end ?? MAX_YEAR)
-        const w = word ? wordFor(l.id, word) : undefined
-        const textW = l.name.length * NAME_W + (w ? w.length * 7 + 18 : 0)
-        // Slide right with the scroll while the bar is still in view.
-        const nx = x0 < edge && x1 > edge ? edge : x0 - 2
-        const alive = isAlive(l, year)
-        const dim = related ? !related.has(l.id) : false
-        const sel = l.id === selectedId
         return (
-          <g
+          <LabelRow
             key={l.id}
-            className={`name${alive ? ' is-alive' : ''}${l.proto ? ' is-proto' : ''}${dim ? ' is-dim' : ''}${sel ? ' is-selected' : ''}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              onSelect(l.id)
-            }}
-          >
-            <rect
-              className="name__hit"
-              x={Math.min(x0, nx) - 8}
-              y={r.y - 22}
-              width={Math.max(x1 - x0, textW + (nx - x0)) + 20}
-              height={30}
-            />
-            <text x={nx} y={r.y - thickness(l.id) / 2 - 5}>
-              <tspan className="name__text">{l.name}</tspan>
-              {w && <tspan className="name__word" dx={9}>{w}</tspan>}
-            </text>
-          </g>
+            id={l.id}
+            y={r.y}
+            x0={x0}
+            x1={x1}
+            nx={x0 < edge && x1 > edge ? edge : x0 - 2}
+            w={word ? wordFor(l.id, word) : undefined}
+            alive={isAlive(l, year)}
+            dim={related ? !related.has(l.id) : false}
+            sel={l.id === selectedId}
+            onSelect={onSelect}
+          />
         )
       })}
     </g>
   )
 }
+
+type LabelRowProps = {
+  id: string
+  y: number
+  x0: number
+  x1: number
+  nx: number
+  w?: string
+  alive: boolean
+  dim: boolean
+  sel: boolean
+  onSelect: (id: string | null) => void
+}
+
+const LabelRow = memo(function LabelRow({ id, y, x0, x1, nx, w, alive, dim, sel, onSelect }: LabelRowProps) {
+  const l = byId.get(id)!
+  const textW = l.name.length * NAME_W + (w ? w.length * 7 + 18 : 0)
+  return (
+    <g
+      className={`name${alive ? ' is-alive' : ''}${l.proto ? ' is-proto' : ''}${dim ? ' is-dim' : ''}${sel ? ' is-selected' : ''}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        onSelect(id)
+      }}
+    >
+      <rect className="name__hit" x={Math.min(x0, nx) - 8} y={y - 22} width={Math.max(x1 - x0, textW + (nx - x0)) + 20} height={30} />
+      <text x={nx} y={y - thickness(id) / 2 - 5}>
+        <tspan className="name__text">{l.name}</tspan>
+        {w && (
+          <tspan className="name__word" dx={9}>
+            {w}
+          </tspan>
+        )}
+      </text>
+    </g>
+  )
+})

@@ -36,7 +36,7 @@ Builds and pushes `dist/` to the `gh-pages` branch. Vite `base` is `/babel/`.
 npm run build && npx --yes puppeteer browsers install chrome && node tests/e2e.cjs dist/index.html
 ```
 
-60 scripted checks covering search, selection, scrolling, folding, zoom and pinch, timeline, word tracing, globe, permalinks and phone layout.
+65 scripted checks covering search, selection, scrolling, touch swipes, folding, zoom and pinch, timeline, word tracing, globe, permalinks and phone layout.
 
 ## Data
 

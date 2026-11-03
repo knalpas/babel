@@ -242,9 +242,15 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const touch = async (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
     await touch('touchStart', [[170, 600], [220, 600]]);
     for (let i = 1; i <= 8; i++) await touch('touchMove', [[170 - i * 12, 600], [220 + i * 12, 600]]);
+    const mid = await p.evaluate(() => ({
+      t: document.querySelector('.tree__body').style.transform,
+      w: +document.querySelector('.tree__svg').getAttribute('width'),
+    }));
+    ok('phone: pinch previews smoothly without re-laying out', /scaleX/.test(mid.t) && mid.w === pw0, mid.t);
     await touch('touchEnd', []);
     await wait(400);
     const pw1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    ok('phone: preview cleared once the pinch ends', (await p.$eval('.tree__body', (e) => e.style.transform)) === '');
     ok('phone: pinching out stretches time', pw1 > pw0 * 2, `${pw0} → ${pw1}`);
     ok('phone: pinch does not zoom the page', await p.evaluate(() => (window.visualViewport ? window.visualViewport.scale : 1) === 1));
     await touch('touchStart', [[80, 600], [310, 600]]);
@@ -267,6 +273,31 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
     await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
     await wait(300);
+    // A real finger swipe across the tree scrolls it sideways.
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
+    await wait(300);
+    await p.evaluate(() => { document.querySelector('.tree__scroll').scrollLeft = 0; });
+    await wait(200);
+    const sl0 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
+    await touch('touchStart', [[300, 480]]);
+    for (let i = 1; i <= 10; i++) await touch('touchMove', [[300 - i * 20, 480]]);
+    await touch('touchEnd', []);
+    await wait(500);
+    ok('phone: finger swipe scrolls the tree sideways', (await p.$eval('.tree__scroll', (e) => e.scrollLeft)) > sl0 + 50);
+    // Swiping along the date axis scrolls too, rather than changing the year.
+    const yA = await yearText(p);
+    const sl1 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
+    const ab = await (await p.$('.tree__axis')).boundingBox();
+    await touch('touchStart', [[300, ab.y + 15]]);
+    for (let i = 1; i <= 10; i++) await touch('touchMove', [[300 - i * 15, ab.y + 15]]);
+    await touch('touchEnd', []);
+    await wait(500);
+    ok('phone: swiping the axis scrolls and keeps the year', (await yearText(p)) === yA && (await p.$eval('.tree__scroll', (e) => e.scrollLeft)) > sl1, yA + ' → ' + (await yearText(p)));
+    await p.touchscreen.tap(200, ab.y + 15);
+    await wait(300);
+    ok('phone: tapping the axis sets the year', (await yearText(p)) !== yA, await yearText(p));
+    await p.evaluate(() => { document.querySelector('.tree__scroll').scrollLeft = 0; });
+    await wait(200);
     const sc = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
     await p.evaluate(() => { const e = document.querySelector('.tree__scroll'); e.scrollLeft += 300; });
     await wait(300);
