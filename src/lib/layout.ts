@@ -38,6 +38,24 @@ export type Section = {
   collapsed: boolean
   /** The language this branch split from, in another section. */
   from?: Language
+  /** Section of the family this branch belongs to (Indo-European for Celtic). */
+  familyId: string
+  /** Languages in the whole family, for a family's own header. */
+  familyCount: number
+  /** This section is a branch of a bigger family. */
+  isBranch: boolean
+}
+
+/** A branch of a family, joined to the family's trunk. */
+export type Offshoot = {
+  /** The family root's row (e.g. Proto-Indo-European). */
+  trunk: Row
+  /** The branch root's row, or null when that branch is folded. */
+  child: Row | null
+  /** Where the branch arrives: its root's bar, or its folded header. */
+  y: number
+  start: number
+  sectionId: string
 }
 
 export type Connector = {
@@ -54,6 +72,7 @@ export type Layout = {
   rowById: Map<string, Row>
   sections: Section[]
   connectors: Connector[]
+  offshoots: Offshoot[]
   height: number
 }
 
@@ -84,6 +103,22 @@ function order(): { group: Group; langs: Language[] }[] {
 
 const ORDER = order()
 
+/** Family root for every section: the topmost ancestor's section. */
+const FAMILY_OF = new Map<string, string>()
+const FAMILY_COUNT = new Map<string, number>()
+for (const s of ORDER) {
+  let l: Language | undefined = s.langs[0]
+  while (l?.parentId) l = byId.get(l.parentId)
+  const fam = l ? groupOf(l.id).id : s.group.id
+  FAMILY_OF.set(s.group.id, fam)
+  FAMILY_COUNT.set(fam, (FAMILY_COUNT.get(fam) ?? 0) + s.langs.length)
+}
+
+/** Sections that belong to a family: the family's own and all its branches. */
+export function familySections(familyId: string): string[] {
+  return ORDER.filter((s) => FAMILY_OF.get(s.group.id) === familyId).map((s) => s.group.id)
+}
+
 export function buildLayout(collapsed: Set<string>): Layout {
   const rows: Row[] = []
   const sections: Section[] = []
@@ -102,7 +137,18 @@ export function buildLayout(collapsed: Set<string>): Layout {
     }
     const pid = s.langs[0].parentId
     const from = pid ? byId.get(pid) : undefined
-    sections.push({ group: s.group, y0, y1: y, count: s.langs.length, collapsed: isCollapsed, from })
+    const familyId = FAMILY_OF.get(s.group.id) ?? s.group.id
+    sections.push({
+      group: s.group,
+      y0,
+      y1: y,
+      count: s.langs.length,
+      collapsed: isCollapsed,
+      from,
+      familyId,
+      familyCount: FAMILY_COUNT.get(familyId) ?? s.langs.length,
+      isBranch: familyId !== s.group.id,
+    })
   }
 
   const rowById = new Map(rows.map((r) => [r.lang.id, r]))
@@ -116,7 +162,23 @@ export function buildLayout(collapsed: Set<string>): Layout {
     connectors.push({ parent, child: row, at, gap: row.lang.start > pEnd })
   }
 
-  return { rows, rowById, sections, connectors, height: y + 60 }
+  const offshoots: Offshoot[] = []
+  for (const sec of sections) {
+    if (!sec.isBranch) continue
+    const trunk = rowById.get(sec.familyId)
+    if (!trunk) continue
+    const child = rowById.get(sec.group.id) ?? null
+    const root = byId.get(sec.group.id)!
+    offshoots.push({
+      trunk,
+      child,
+      y: child ? child.y : sec.y0 + HEADER_H / 2,
+      start: root.start,
+      sectionId: sec.group.id,
+    })
+  }
+
+  return { rows, rowById, sections, connectors, offshoots, height: y + 60 }
 }
 
 export function sectionOf(id: string): string {

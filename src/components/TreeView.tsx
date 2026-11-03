@@ -6,7 +6,7 @@ import type { WordId } from '../types'
 import { byId, childrenOf, isAlive, lineage } from '../data'
 import { wordFor } from '../data/words'
 import { AXIS_TICKS, MAX_YEAR, clampYear, formatYearShort, fractionToYear } from '../lib/time'
-import { HEADER_H, PAD_L, PAD_R, buildLayout, makeX, sectionOf, type Layout } from '../lib/layout'
+import { HEADER_H, PAD_L, PAD_R, buildLayout, familySections, makeX, sectionOf, type Layout } from '../lib/layout'
 
 type Props = {
   year: number
@@ -39,6 +39,7 @@ function descendants(id: string, out = new Set<string>()): Set<string> {
  */
 export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
+  const gRef = useRef<SVGGElement>(null)
   const zoomRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null)
   const [t, setT] = useState<ZoomTransform>(zoomIdentity)
   const tRef = useRef(t)
@@ -78,17 +79,33 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
       })
       .constrain((tr) => constrainRef.current(tr))
       .on('start', (e) => {
-        // A new touch or click stops any glide still running.
-        if (e.sourceEvent) stopGlide()
-        samples.length = 0
+        if (e.sourceEvent) {
+          // A touch that stops a glide only stops it: it must not also select
+          // whatever language happens to be under the finger.
+          if (raf) suppressClickUntil = performance.now() + 450
+          stopGlide()
+          samples.length = 0
+        }
       })
       .on('zoom', (e) => {
         tRef.current = e.transform
-        setT(e.transform)
+        // Move the drawing straight away; the rest of the view (date bar,
+        // family headers, sliding names) catches up once per frame.
+        gRef.current?.setAttribute('transform', e.transform.toString())
+        if (!renderQueued) {
+          renderQueued = true
+          requestAnimationFrame(() => {
+            renderQueued = false
+            setT(tRef.current)
+          })
+        }
         const src = e.sourceEvent as Event | null
-        if (src && src.type === 'touchmove' && (src as TouchEvent).touches.length === 1) {
-          samples.push({ x: e.transform.x, y: e.transform.y, k: e.transform.k, t: performance.now() })
-          if (samples.length > 6) samples.shift()
+        if (src && src.type === 'touchmove') {
+          if ((src as TouchEvent).touches.length === 1) {
+            const now = performance.now()
+            samples.push({ x: e.transform.x, y: e.transform.y, t: now })
+            while (samples.length > 2 && now - samples[0].t > 100) samples.shift()
+          } else samples.length = 0
         }
       })
       .on('end', (e) => {
@@ -98,49 +115,66 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
     zoomRef.current = z
     const sel = select(el)
     sel.call(z)
+    // No double-tap zoom: quick taps (say, to stop a glide) must not zoom.
+    sel.on('dblclick.zoom', null)
 
-    // Momentum: a one-finger flick keeps the tree gliding and slowing down,
-    // like a native scroll view. It stops at the edges and on the next touch.
-    const samples: { x: number; y: number; k: number; t: number }[] = []
+    // Momentum, tuned like iOS scrolling: the tree keeps the flick's speed and
+    // slows smoothly (about half a second to lose two thirds of it). It stops
+    // at the edges and the moment a finger touches down again.
+    let renderQueued = false
+    let suppressClickUntil = 0
+    const samples: { x: number; y: number; t: number }[] = []
     let raf = 0
     function stopGlide() {
       if (raf) cancelAnimationFrame(raf)
       raf = 0
     }
     function glide() {
+      const now = performance.now()
       const last = samples[samples.length - 1]
-      const first = samples[0]
+      // Velocity over the last ~100 ms of movement, not the whole drag.
+      const first = samples.find((p) => last && last.t - p.t <= 100) ?? samples[0]
       samples.length = 0
-      if (!last || !first || last === first || last.k !== first.k) return
+      if (!last || !first || last === first) return
+      // The finger was held still before lifting: no flick.
+      if (now - last.t > 60) return
       const dt = last.t - first.t
-      // Only a flick that is still moving when the finger lifts.
-      if (dt <= 0 || performance.now() - last.t > 80) return
+      if (dt < 8) return
       let vx = (last.x - first.x) / dt
       let vy = (last.y - first.y) / dt
       const speed = Math.hypot(vx, vy)
-      if (speed < 0.15) return
-      const cap = 4.5
+      if (speed < 0.12) return
+      const cap = 7
       if (speed > cap) {
         vx *= cap / speed
         vy *= cap / speed
       }
       let prev = performance.now()
-      const step = (now: number) => {
-        const ms = Math.min(48, now - prev)
-        prev = now
+      const step = (t: number) => {
+        const ms = Math.min(34, Math.max(1, t - prev))
+        prev = t
         const before = tRef.current
         z.translateBy(sel, (vx * ms) / before.k, (vy * ms) / before.k)
         const after = tRef.current
-        // Hit an edge on one axis: stop moving along it.
+        // Reached an edge on one axis: stop moving along it.
         if (Math.abs(after.x - before.x) < 0.01) vx = 0
         if (Math.abs(after.y - before.y) < 0.01) vy = 0
-        const decay = Math.pow(0.9965, ms)
+        const decay = Math.pow(0.998, ms)
         vx *= decay
         vy *= decay
-        raf = Math.hypot(vx, vy) > 0.02 ? requestAnimationFrame(step) : 0
+        raf = Math.hypot(vx, vy) > 0.03 ? requestAnimationFrame(step) : 0
       }
       raf = requestAnimationFrame(step)
     }
+    const swallowClick = (e: Event) => {
+      if (performance.now() < suppressClickUntil) {
+        e.stopPropagation()
+        e.preventDefault()
+        suppressClickUntil = 0
+      }
+    }
+    el.addEventListener('click', swallowClick, true)
+
     // A plain wheel or two-finger trackpad swipe pans, like scrolling a page.
     sel.on(
       'wheel.pan',
@@ -153,6 +187,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
     )
     return () => {
       stopGlide()
+      el.removeEventListener('click', swallowClick, true)
       sel.on('.zoom', null).on('wheel.pan', null)
     }
   }, [])
@@ -249,8 +284,10 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
 
   function toggle(id: string) {
     const next = new Set(collapsed)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
+    // Folding a whole family (Indo-European) folds all its branches with it.
+    const ids = familySections(id).length > 1 ? familySections(id) : [id]
+    if (next.has(id)) for (const s of ids) next.delete(s)
+    else for (const s of ids) next.add(s)
     setCollapsed(next)
   }
 
@@ -312,7 +349,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
   return (
     <div ref={rootRef} className="tree" onClick={() => onSelect(null)}>
       <svg className="tree__svg" width="100%" height="100%" role="img" aria-label="Time-scaled family tree of languages">
-        <g transform={t.toString()}>
+        <g ref={gRef} transform={t.toString()}>
           <Grid x={x} height={layout.height} />
           <Branches layout={layout} x={x} year={year} selectedId={selectedId} related={related} />
           <line className="tree__year" x1={yearX} x2={yearX} y1={-4000} y2={layout.height + 4000} />
@@ -335,8 +372,12 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
           .map((s) => (
             <div
               key={s.group.id}
-              className="section__head"
-              style={{ transform: `translate(0px, ${t.applyY(s.y0)}px) scale(${t.k})` }}
+              className={`section__head${s.isBranch ? ' is-branch' : ''}`}
+              style={{
+                // Branch headers sit just right of the family trunk while it is
+                // on screen, and stick to the left edge once it scrolls away.
+                transform: `translate(${s.isBranch ? Math.max(0, t.applyX(PAD_L) - 4 * t.k) : 0}px, ${t.applyY(s.y0)}px) scale(${t.k})`,
+              }}
             >
               <button
                 type="button"
@@ -352,7 +393,10 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
                 </span>
                 <span className="dot" style={{ background: s.group.color }} />
                 <span className="section__label">{s.group.label}</span>
-                <span className="section__count">{s.count}</span>
+                {!s.isBranch && s.familyCount > s.count && <span className="section__kind">family</span>}
+                <span className="section__count" title={`${s.familyCount} languages`}>
+                  {s.isBranch ? s.count : s.familyCount}
+                </span>
               </button>
               {s.from && (
                 <button
@@ -511,6 +555,58 @@ function ribbon(p0: P, p1: P, p2: P, p3: P, w0: number, w1: number): string {
   return `M${top.map(f).join('L')}L${bot.reverse().map(f).join('L')}Z`
 }
 
+/**
+ * A family's trunk: the root language (Proto-Indo-European) grows down the
+ * left of the chart, and each branch (Germanic, Celtic, …) sweeps out of it to
+ * where that branch begins. The trunk thins as branches leave it.
+ */
+function FamilyTrunks({ layout, x, related }: { layout: Layout; x: (y: number) => number; related: Set<string> | null }) {
+  const byTrunk = new Map<string, typeof layout.offshoots>()
+  for (const o of layout.offshoots) {
+    if (!o.child) continue
+    const list = byTrunk.get(o.trunk.lang.id) ?? []
+    list.push(o)
+    byTrunk.set(o.trunk.lang.id, list)
+  }
+  return (
+    <g className="trunks">
+      {[...byTrunk.values()].map((list) => {
+        const trunk = list[0].trunk
+        const tx = x(trunk.lang.start)
+        const y0 = trunk.y
+        const last = list[list.length - 1]
+        const wTop = thickness(trunk.lang.id) * 0.95
+        const wBottom = Math.max(2.4, thickness(last.child!.lang.id) * 0.9)
+        const color = trunk.group.color
+        const dimTrunk = related ? !related.has(trunk.lang.id) : false
+        // Down the left, ending in a curve into the last branch.
+        const yEnd = last.y - 24
+        const trunkPath = ribbon([tx, y0], [tx, y0 + (yEnd - y0) * 0.33], [tx, y0 + (yEnd - y0) * 0.66], [tx, yEnd], wTop, wBottom)
+        return (
+          <g key={trunk.lang.id}>
+            <path className={`trunk${dimTrunk ? ' is-dim' : ''}`} d={trunkPath} fill={shade(color, 0.3)} />
+            {list.map((o) => {
+              const child = o.child!
+              const xr = x(o.start)
+              const yb = o.y
+              // Leave the trunk a little above the branch and sweep right into it.
+              const ys = Math.max(y0 + 8, yb - Math.min(60, Math.max(26, (xr - tx) * 0.35)))
+              const wc = thickness(child.lang.id)
+              // Trunk width where this branch leaves it.
+              const f = Math.min(1, Math.max(0, (ys - y0) / Math.max(1, yEnd - y0)))
+              const ws = Math.min(wTop + (wBottom - wTop) * f, wc * 1.1)
+              const k = Math.max(10, (xr - tx) * 0.5)
+              const d = ribbon([tx, ys], [tx, ys + (yb - ys) * 0.75], [xr - k, yb], [xr, yb], Math.max(1.6, ws * 0.9), wc)
+              const dim = related ? !(related.has(child.lang.id) && related.has(trunk.lang.id)) : false
+              return <path key={o.sectionId} className={`trunk__branch${dim ? ' is-dim' : ''}`} d={d} fill={shade(child.group.color, 0.18)} />
+            })}
+          </g>
+        )
+      })}
+    </g>
+  )
+}
+
 /** A leaf pointing right from its stem, about 16 units long. */
 const LEAF = 'M0,0C2.5,-5.8 9.5,-8.4 16,-6.2C13.2,-0.8 7,2.6 0,0Z'
 const LEAF_LIGHT = 'M0,0C2.5,-5.8 9.5,-8.4 16,-6.2C10.5,-4.2 5,-2.2 0,0Z'
@@ -562,8 +658,10 @@ const Branches = memo(function Branches({ layout, x, year, selectedId, related }
       </defs>
 
       {layout.sections.map((s) => (
-        <line key={s.group.id} className="section__rule" x1={0} x2="100%" y1={s.y0 + 0.5} y2={s.y0 + 0.5} />
+        <line key={s.group.id} className="section__rule" x1={0} x2={x(MAX_YEAR) + PAD_R} y1={s.y0 + 0.5} y2={s.y0 + 0.5} />
       ))}
+
+      <FamilyTrunks layout={layout} x={x} related={related} />
 
       {layout.connectors.map((c) => {
         const child = c.child.lang

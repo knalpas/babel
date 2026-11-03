@@ -123,6 +123,18 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Unfold all').click());
     await wait(300);
     ok('Unfold all restores rows', (await p.$$eval('.name', (r) => r.length)) === 248);
+    // Indo-European is drawn as the trunk all its branches grow from.
+    ok('Indo-European header counts the whole family', await p.evaluate(() => {
+      const h = [...document.querySelectorAll('.section__head')].find((e) => e.textContent.includes('Indo-European'));
+      return !!h && /136/.test(h.textContent) && /family/i.test(h.textContent);
+    }));
+    ok('a trunk joins Proto-Indo-European to all 10 branches', (await p.$$('.trunk')).length === 1 && (await p.$$('.trunk__branch')).length === 10);
+    await p.evaluate(() => [...document.querySelectorAll('.section__btn')].find((b) => b.textContent.includes('Indo-European')).click());
+    await wait(300);
+    ok('folding Indo-European folds all 11 of its bands', (await p.$$('.section__btn.is-collapsed')).length === 11 && (await p.$$('.trunk__branch')).length === 0);
+    await p.evaluate(() => [...document.querySelectorAll('.section__btn')].find((b) => b.textContent.includes('Indo-European')).click());
+    await wait(300);
+    ok('unfolding Indo-European brings them all back', (await p.$$('.section__btn.is-collapsed')).length === 0 && (await p.$$('.trunk__branch')).length === 10);
     const k0 = (await tf(p)).k;
     await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Zoom in"]').click());
     await wait(500);
@@ -316,6 +328,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const fa = await tf(p);
     await swipe([300, ab.y + 15], [100, ab.y + 15]);
     ok('phone: swiping across the axis pans, year unchanged', (await yearText(p)) === yA && (await tf(p)).x < fa.x - 100, `${fa.x.toFixed(0)} → ${(await tf(p)).x.toFixed(0)}`);
+    await wait(2500); // let the swipe's glide finish: a tap during a glide only stops it
     await p.touchscreen.tap(200, ab.y + 15);
     await wait(300);
     ok('phone: tapping the axis sets the year', (await yearText(p)) !== yA, await yearText(p));
@@ -370,6 +383,30 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     await wait(300);
     await touch('touchEnd', []);
     ok('phone: touching again stops the glide', Math.abs((await tf(p)).y - s0.y) < 1);
+    // Tapping on a language to stop a glide must not open that language.
+    await p.evaluate(() => document.querySelector('.panel__close')?.click());
+    await flick(0, -150);
+    await wait(80);
+    const nb = await p.evaluate(() => {
+      const r = [...document.querySelectorAll('.name__text')].map((e) => e.getBoundingClientRect()).find((r) => r.top > 300 && r.top < 700 && r.left > 0 && r.right < 390);
+      return r ? [r.left + 8, r.top + r.height / 2] : null;
+    });
+    if (nb) await p.touchscreen.tap(nb[0], nb[1]);
+    await wait(300);
+    ok('phone: a tap that stops a glide does not open a language', nb && !(await p.$('.panel')));
+    if (nb) await p.touchscreen.tap(nb[0], nb[1]);
+    await wait(400);
+    ok('phone: a tap when still opens the language', !!(await p.$('.panel')));
+    await p.evaluate(() => document.querySelector('.panel__close')?.click());
+    await wait(200);
+    const kq = (await tf(p)).k;
+    await p.touchscreen.tap(200, 600);
+    await wait(80);
+    await p.touchscreen.tap(200, 600);
+    await wait(400);
+    ok('phone: double tap does not zoom', Math.abs((await tf(p)).k - kq) < 0.001);
+    await p.evaluate(() => document.querySelector('.panel__close')?.click());
+    await wait(200);
     // Go to the 'today' end first, so there is room to glide back in time.
     for (let n = 0; n < 3; n++) { await flick(-300, 0); await wait(800); }
     const s1 = await tf(p);
@@ -392,10 +429,13 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       const shown = xs.filter((r) => r.right > 0 && r.left < 390);
       return shown.every((r, i) => i === 0 || r.left >= shown[i - 1].right - 1) && shown.every((r) => r.left >= 0 && r.right <= 390);
     }));
+    await wait(2500); // let the last glide settle
     const hb = await (await p.$('.section__btn')).boundingBox();
     await p.touchscreen.tap(hb.x + 10, hb.y + hb.height / 2);
     await wait(300);
-    ok('phone: family header still taps to fold', (await p.$$('.section__btn.is-collapsed')).length === 1);
+    ok('phone: family header still taps to fold', (await p.$eval('.section__btn', (b) => b.getAttribute('aria-expanded'))) === 'false');
+    await p.touchscreen.tap(hb.x + 10, hb.y + hb.height / 2);
+    await wait(300);
     await swipe([350, 600], [40, 600]);
     await swipe([350, 600], [40, 600]);
     await swipe([350, 600], [40, 600]);

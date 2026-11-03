@@ -401,8 +401,13 @@ a {
   padding: 0 18px 0 var(--gutter-l);
   transform-origin: 0 0;
   pointer-events: auto;
-  background: linear-gradient(90deg, var(--bg) 80%, transparent);
   white-space: nowrap;
+  /* No background, so the family trunk runs unbroken behind the headers;
+     a halo in the page colour keeps the text readable over it. */
+  text-shadow:
+    0 0 3px var(--bg),
+    0 0 3px var(--bg),
+    0 0 6px var(--bg);
 }
 
 .section__btn {
@@ -445,6 +450,18 @@ a {
   letter-spacing: 0.01em;
 }
 
+.section__kind {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.section__head.is-branch .section__label {
+  font-size: 17px;
+}
+
 .section__count {
   min-width: 22px;
   padding: 1px 7px;
@@ -479,6 +496,19 @@ a {
 
 .branch.is-gap {
   opacity: 0.45;
+}
+
+.trunk {
+  opacity: 0.85;
+}
+
+.trunk__branch {
+  opacity: 0.8;
+}
+
+.trunk.is-dim,
+.trunk__branch.is-dim {
+  opacity: 0.14;
 }
 
 .limb.is-dim,

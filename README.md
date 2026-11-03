@@ -6,7 +6,7 @@ A time-scaled family tree and globe of the world's languages: 248 languages acro
 
 ## Features
 
-- **Tree**: a phylogeny with time running left to right on Chronoglobe's non-linear scale, one band per family or branch. Each language is a shaded limb that thickens with the number of languages descended from it; daughters sweep off their parent as smooth tapered branches. Living languages end in leaves (one, two from 10 million speakers, three from 100 million), extinct ones in a dry twig and †, revived ones grow a new bud; reconstructed proto-languages are faint ghost limbs, and a dotted trail shows a liturgical afterlife. Drag (or swipe with one finger, with momentum) to move around in any direction, pinch or ctrl/⌘-scroll to zoom, and use **− / Fit / +** for buttons. Desktops open on the whole of history, phones at a readable size you can swipe across; fold any family by its header.
+- **Tree**: a phylogeny with time running left to right on Chronoglobe's non-linear scale, one band per family or branch; a family's branches grow from its trunk (all ten Indo-European branches sweep out of Proto-Indo-European). Each language is a shaded limb that thickens with the number of languages descended from it; daughters sweep off their parent as smooth tapered branches. Living languages end in leaves (one, two from 10 million speakers, three from 100 million), extinct ones in a dry twig and †, revived ones grow a new bud; reconstructed proto-languages are faint ghost limbs, and a dotted trail shows a liturgical afterlife. Drag (or swipe with one finger, with momentum) to move around in any direction, pinch or ctrl/⌘-scroll to zoom, and use **− / Fit / +** for buttons. Desktops open on the whole of history, phones at a readable size you can swipe across; fold any family by its header.
 - **Globe**: every language spoken in the chosen year, with arcs joining it to its parent. Select one to trace its whole migration path from the root of its family.
 - **Timeline**: scrub, step or play from 4500 BC to today. The curve shows how many languages in the dataset are on record at each moment.
 - **Detail panel**: dates, status, speakers, script, descent, daughters, and contact links in both directions (Atelier's "inspired by" idea, applied to loanwords: English ← Old Norse, Anglo-Norman, Latin).
@@ -36,7 +36,7 @@ Builds and pushes `dist/` to the `gh-pages` branch. Vite `base` is `/babel/`.
 npm run build && npx --yes puppeteer browsers install chrome && node tests/e2e.cjs dist/index.html
 ```
 
-78 scripted checks, including flick momentum, real mouse drags, wheel scrolls, one-finger swipes in every direction and two-finger pinches on a phone-sized screen.
+85 scripted checks, including the family trunk, taps that stop a glide, flick momentum, real mouse drags, wheel scrolls, one-finger swipes in every direction and two-finger pinches on a phone-sized screen.
 
 ## Data
 

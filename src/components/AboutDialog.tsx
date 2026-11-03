@@ -18,10 +18,12 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
         </button>
         <h2 id="about-title">How to read Babel</h2>
         <p>
-          {LANGUAGES.length} languages across 6,500 years, {living} of them still spoken. Each line in the tree is
-          one language’s lifetime; it branches from its parent where it became distinct. Dashed lines are
-          reconstructed proto-languages that were never written down. A dagger † marks the last native speakers; a
-          faint trail after it means the language lived on in liturgy, scholarship or revival.
+          {LANGUAGES.length} languages across 6,500 years, {living} of them still spoken. Each limb in the tree is
+          one language’s lifetime, branching from its parent where it became distinct; the more languages descend
+          from it, the thicker it grows. A whole family hangs from one trunk: Proto-Indo-European runs down the
+          left and all ten of its branches, from Anatolian to Balto-Slavic, grow out of it. Living languages end in
+          leaves (two from 10 million speakers, three from 100 million). Extinct ones end in a dry twig and †, and
+          revived ones grow a new bud. Faint limbs are reconstructed proto-languages that were never written down.
         </p>
         <p>
           On the globe, each dot is a language spoken in the chosen year, placed at the rough centre of its
