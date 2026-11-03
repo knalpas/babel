@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { flushSync } from 'react-dom'
 import { select } from 'd3-selection'
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom'
 import 'd3-transition'
@@ -89,14 +90,14 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
       })
       .on('zoom', (e) => {
         tRef.current = e.transform
-        // Move the drawing straight away; the rest of the view (date bar,
-        // family headers, sliding names) catches up once per frame.
-        gRef.current?.setAttribute('transform', e.transform.toString())
+        // Redraw once per frame, and everything together: the drawing, date
+        // bar, family headers and names move in the same frame, so nothing
+        // lags behind anything else.
         if (!renderQueued) {
           renderQueued = true
           requestAnimationFrame(() => {
             renderQueued = false
-            setT(tRef.current)
+            flushSync(() => setT(tRef.current))
           })
         }
         const src = e.sourceEvent as Event | null
@@ -322,14 +323,19 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
   }
 
   const yearX = x(year)
+  // Snap the view to whole screen pixels, so text never shimmers between
+  // pixels as it moves.
+  const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
+  const snap = (v: number) => Math.round(v * dpr) / dpr
+  const view = zoomIdentity.translate(snap(t.x), snap(t.y)).scale(t.k)
   // Axis ticks in screen space. Labels near an edge are nudged inwards rather
   // than cut off, and any label that would then crowd its neighbour is dropped.
   const ticks = useMemo(() => {
     const out: { tick: number; sx: number; lx: number; label: string }[] = []
-    const todayX = t.applyX(x(MAX_YEAR))
+    const todayX = view.applyX(x(MAX_YEAR))
     let last = -Infinity
     for (const tick of AXIS_TICKS) {
-      const sx = t.applyX(x(tick))
+      const sx = view.applyX(x(tick))
       if (sx < -30 || sx > size.w + 30) continue
       const label = formatYearShort(tick)
       const half = label.length * 3.4
@@ -339,17 +345,17 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
       last = lx
     }
     return out
-  }, [t, x, size.w])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view.x, view.k, x, size.w])
 
-  // Names slide in 24-unit steps, so most pan frames re-render none of them.
-  const edge = Math.round(t.invertX(10) / 24) * 24
+  const edge = view.invertX(10)
   const viewTop = t.invertY(0)
   const viewBottom = t.invertY(size.h)
 
   return (
     <div ref={rootRef} className="tree" onClick={() => onSelect(null)}>
       <svg className="tree__svg" width="100%" height="100%" role="img" aria-label="Time-scaled family tree of languages">
-        <g ref={gRef} transform={t.toString()}>
+        <g ref={gRef} transform={view.toString()}>
           <Grid x={x} height={layout.height} />
           <Branches layout={layout} x={x} year={year} selectedId={selectedId} related={related} />
           <line className="tree__year" x1={yearX} x2={yearX} y1={-4000} y2={layout.height + 4000} />
@@ -376,7 +382,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
               style={{
                 // Branch headers sit just right of the family trunk while it is
                 // on screen, and stick to the left edge once it scrolls away.
-                transform: `translate(${s.isBranch ? Math.max(0, t.applyX(PAD_L) - 4 * t.k) : 0}px, ${t.applyY(s.y0)}px) scale(${t.k})`,
+                transform: `translate(${s.isBranch ? snap(Math.max(0, view.applyX(PAD_L) - 4 * t.k)) : 0}px, ${snap(view.applyY(s.y0))}px) scale(${t.k})`,
               }}
             >
               <button
@@ -436,7 +442,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
           </g>
         ))}
         {(() => {
-          const sx = t.applyX(x(MAX_YEAR))
+          const sx = view.applyX(x(MAX_YEAR))
           if (sx < -30 || sx > size.w + 30) return null
           const lx = Math.min(Math.max(sx, 22), size.w - 22)
           return (
@@ -447,7 +453,7 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
             </g>
           )
         })()}
-        <g transform={`translate(${t.applyX(yearX)},0)`} className="axis__now">
+        <g transform={`translate(${view.applyX(yearX)},0)`} className="axis__now">
           <path d={`M-6,${AXIS_H - 9}L6,${AXIS_H - 9}L0,${AXIS_H}z`} />
         </g>
       </svg>
@@ -500,7 +506,7 @@ function spread(id: string): number {
   return n
 }
 function thickness(id: string): number {
-  return Math.min(10, 2.2 + 1.55 * Math.log2(1 + spread(id)))
+  return Math.min(11, 3 + 1.5 * Math.log2(1 + spread(id)))
 }
 
 /** Width of a limb at drawing-x `at`, tapering from base to tip. */
@@ -514,7 +520,7 @@ function widthAt(l: { id: string; start: number; end: number | null }, at: numbe
 }
 function tipWidth(l: { id: string; end: number | null }): number {
   const w0 = thickness(l.id)
-  return l.end == null ? Math.max(1.8, w0 * 0.5) : Math.max(1.1, w0 * 0.3)
+  return l.end == null ? Math.max(2.2, w0 * 0.55) : Math.max(1.6, w0 * 0.35)
 }
 
 /** Darken a #rrggbb colour by mixing it towards black. */
@@ -644,7 +650,7 @@ function Leaves({ x, y, n, scale }: { x: number; y: number; n: number; scale: nu
  */
 const Branches = memo(function Branches({ layout, x, year, selectedId, related }: BranchProps) {
   const selected = selectedId ? byId.get(selectedId) : undefined
-  const firstRows = new Set(layout.sections.map((s) => s.group.id))
+  const firstRows = new Set(layout.sections.filter((s) => !s.isBranch).map((s) => s.group.id))
   return (
     <g>
       <defs>
@@ -675,9 +681,13 @@ const Branches = memo(function Branches({ layout, x, year, selectedId, related }
         if (c.gap) {
           // The record goes quiet between parent and child: a slender, paler
           // shoot from the parent's tip.
-          const xs = x(parent.end ?? MAX_YEAR) - 2
-          const k = Math.max(6, (xc - xs) * 0.6)
-          const d = ribbon([xs, yp], [xs + k, yp], [xc - k * 0.55, yc], [xc, yc], Math.max(1.2, tipWidth(parent)), Math.max(1.4, wc * 0.8))
+          // Daughters further down leave the parent's limb earlier, so they
+          // fan out along it instead of all leaving from its very tip.
+          const tip = x(parent.end ?? MAX_YEAR) - 2
+          const xs = Math.max(x(parent.start) + 6, Math.min(tip, xc - Math.min(260, Math.max(30, dy * 1.1))))
+          const k = Math.max(8, (xc - xs) * 0.55)
+          const ws = Math.min(widthAt(parent, xs, x) * 0.8, wc)
+          const d = ribbon([xs, yp], [xs + k, yp], [xc - k * 0.55, yc], [xc, yc], Math.max(1.4, ws), Math.max(1.6, wc * 0.85))
           return (
             <path
               key={child.id}
@@ -687,9 +697,12 @@ const Branches = memo(function Branches({ layout, x, year, selectedId, related }
             />
           )
         }
-        // Leave the parent's limb a little before the split and sweep down.
-        const xs = Math.max(x(parent.start) + 4, xc - Math.min(70, Math.max(14, dy * 0.55)))
-        const k = Math.max(6, (xc - xs) * 0.62)
+        // Leave the parent's limb well before the split and sweep down in a
+        // long, gentle curve: the further down the daughter, the earlier it
+        // leaves, so many daughters fan out like a bough instead of dropping
+        // in a bundle.
+        const xs = Math.max(x(parent.start) + 6, xc - Math.min(220, Math.max(24, dy * 1.05)))
+        const k = Math.max(8, (xc - xs) * 0.55)
         const ws = Math.min(widthAt(parent, xs, x) * 0.85, wc * 1.05)
         const d = ribbon([xs, yp], [xs + k, yp], [xc - k * 0.55, yc], [xc, yc], Math.max(1.4, ws), wc)
         return (
@@ -739,10 +752,7 @@ const Branches = memo(function Branches({ layout, x, year, selectedId, related }
               </g>
             )}
             {l.proto ? (
-              <>
-                <path className="bar__ghost" d={limb} />
-                <line className="bar__proto" x1={x0 + w0} x2={x1} y1={y} y2={y} />
-              </>
+              <path className="bar__ghost" d={limb} />
             ) : (
               <>
                 <path className="bar__limb" d={limb} fill={`url(#bark-${r.group.id})`} />
@@ -755,18 +765,15 @@ const Branches = memo(function Branches({ layout, x, year, selectedId, related }
                 )}
               </>
             )}
-            <circle className="bar__knot" cx={x0} cy={y} r={h0 + (sel ? 2 : 0.3)} fill={shade(r.group.color, 0.32)} />
+            {(firstRows.has(l.id) || sel) && (
+              <circle className="bar__knot" cx={x0} cy={y} r={h0 + (sel ? 2 : 0.3)} fill={shade(r.group.color, 0.32)} />
+            )}
             {living ? (
               <Leaves x={x1 + h1 * 0.4} y={y} n={leafCount(l.speakers)} scale={sel ? 1.2 : 1} />
             ) : (
-              <>
-                {!l.proto && (
-                  <path className="bar__twig" d={`M${x1},${y}l5,-3.4m-5,3.4l6,1.8m-2.6,-0.8l2.6,-2.6`} />
-                )}
-                <text className="bar__dagger" x={x1 + (l.proto ? 3 : 9)} y={y + 4.5}>
-                  †
-                </text>
-              </>
+              <text className="bar__dagger" x={x1 + h1 + 3} y={y + 4}>
+                †
+              </text>
             )}
           </g>
         )
@@ -802,30 +809,71 @@ type LabelProps = BranchProps & {
 const NAME_W = 7.6 // average px per character at the name size
 
 /**
- * Names sit above their bars and slide along to stay readable while scrolled.
- * Each row is memoised, so a scroll frame only re-renders the few names that
- * actually move.
+ * Names sit above their bars. When a limb runs off the left edge, its name
+ * stays pinned at the edge so it remains readable. All pinned names live in
+ * one group that moves as a unit, so a pan frame changes a single attribute
+ * instead of re-placing every pinned name; a row only re-renders when it
+ * crosses the edge.
  */
 const Labels = memo(function Labels({ layout, x, year, word, selectedId, related, edge, onSelect }: LabelProps) {
+  const free: ReactElement[] = []
+  const pinned: ReactElement[] = []
+  for (const r of layout.rows) {
+    const l = r.lang
+    const x0 = x(l.start)
+    const x1 = x(l.end ?? MAX_YEAR)
+    const isPinned = x1 > edge && x0 - 2 < edge
+    const row = (
+      <LabelRow
+        key={l.id}
+        id={l.id}
+        y={r.y}
+        nx={isPinned ? 0 : x0 - 2}
+        w={word ? wordFor(l.id, word) : undefined}
+        alive={isAlive(l, year)}
+        dim={related ? !related.has(l.id) : false}
+        sel={l.id === selectedId}
+        onSelect={onSelect}
+      />
+    )
+    ;(isPinned ? pinned : free).push(row)
+  }
   return (
     <g>
+      <BarHits layout={layout} x={x} onSelect={onSelect} />
+      <g>{free}</g>
+      <g transform={`translate(${edge},0)`}>{pinned}</g>
+    </g>
+  )
+})
+
+/** Tap targets along every limb; they never move relative to the drawing. */
+const BarHits = memo(function BarHits({
+  layout,
+  x,
+  onSelect,
+}: {
+  layout: Layout
+  x: (y: number) => number
+  onSelect: (id: string | null) => void
+}) {
+  return (
+    <g className="bar-hits">
       {layout.rows.map((r) => {
-        const l = r.lang
-        const x0 = x(l.start)
-        const x1 = x(l.end ?? MAX_YEAR)
+        const x0 = x(r.lang.start)
+        const x1 = x(r.lang.end ?? MAX_YEAR)
         return (
-          <LabelRow
-            key={l.id}
-            id={l.id}
-            y={r.y}
-            x0={x0}
-            x1={x1}
-            nx={x0 < edge && x1 > edge ? edge : x0 - 2}
-            w={word ? wordFor(l.id, word) : undefined}
-            alive={isAlive(l, year)}
-            dim={related ? !related.has(l.id) : false}
-            sel={l.id === selectedId}
-            onSelect={onSelect}
+          <rect
+            key={r.lang.id}
+            className="name__hit"
+            x={x0 - 8}
+            y={r.y - 22}
+            width={Math.max(24, x1 - x0 + 28)}
+            height={30}
+            onClick={(e) => {
+              e.stopPropagation()
+              onSelect(r.lang.id)
+            }}
           />
         )
       })}
@@ -836,8 +884,6 @@ const Labels = memo(function Labels({ layout, x, year, word, selectedId, related
 type LabelRowProps = {
   id: string
   y: number
-  x0: number
-  x1: number
   nx: number
   w?: string
   alive: boolean
@@ -846,7 +892,7 @@ type LabelRowProps = {
   onSelect: (id: string | null) => void
 }
 
-const LabelRow = memo(function LabelRow({ id, y, x0, x1, nx, w, alive, dim, sel, onSelect }: LabelRowProps) {
+const LabelRow = memo(function LabelRow({ id, y, nx, w, alive, dim, sel, onSelect }: LabelRowProps) {
   const l = byId.get(id)!
   const textW = l.name.length * NAME_W + (w ? w.length * 7 + 18 : 0)
   return (
@@ -857,7 +903,7 @@ const LabelRow = memo(function LabelRow({ id, y, x0, x1, nx, w, alive, dim, sel,
         onSelect(id)
       }}
     >
-      <rect className="name__hit" x={Math.min(x0, nx) - 8} y={y - 22} width={Math.max(x1 - x0, textW + (nx - x0)) + 20} height={30} />
+      <rect className="name__hit" x={nx - 8} y={y - 22} width={textW + 16} height={30} />
       <text x={nx} y={y - thickness(id) / 2 - 5}>
         <tspan className="name__text">{l.name}</tspan>
         {w && (

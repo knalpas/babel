@@ -535,11 +535,11 @@ a {
 
 .bar__ghost {
   stroke: none;
-  opacity: 0.18;
+  opacity: 0.26;
 }
 
 .bar.is-alive .bar__ghost {
-  opacity: 0.34;
+  opacity: 0.45;
 }
 
 .bar__proto {
@@ -610,9 +610,10 @@ a {
 
 .bar__dagger {
   font-family: var(--serif);
-  font-size: 14px;
+  font-size: 12px;
   fill: var(--ink-faint);
   stroke: none;
+  opacity: 0.8;
 }
 
 .name {

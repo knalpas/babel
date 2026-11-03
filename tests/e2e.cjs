@@ -351,6 +351,53 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       const r = document.querySelector('.tree__tools').getBoundingClientRect();
       return r.left >= 0 && r.right <= 390;
     }));
+    // No wobble: during a drag, family headers stay locked to the tree, and a
+    // name pinned to the left edge holds still instead of stepping.
+    await wait(2500);
+    const lock = [];
+    await touch('touchStart', [[200, 640]]);
+    for (let i = 1; i <= 14; i++) {
+      await touch('touchMove', [[200 - i * 9, 640 - i * 7]]);
+      await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      lock.push(await p.evaluate(() => {
+        const heads = [...document.querySelectorAll('.section__head')];
+        const rules = [...document.querySelectorAll('.section__rule')];
+        // Header top versus the section's own rule line, drawn inside the tree.
+        const out = [];
+        for (const h of heads) {
+          const label = h.querySelector('.section__label').textContent;
+          const r = rules.map((l) => l.getBoundingClientRect().top).sort((a, b) => Math.abs(a - h.getBoundingClientRect().top) - Math.abs(b - h.getBoundingClientRect().top))[0];
+          if (r != null) out.push(h.getBoundingClientRect().top - r);
+        }
+        const pinned = {};
+        for (const t of document.querySelectorAll('.name__text')) {
+          const x = t.getBoundingClientRect().left;
+          if (x > -50 && x < 60) pinned[t.textContent] = x;
+        }
+        return { d: out[0], pinned };
+      }));
+    }
+    await touch('touchEnd', []);
+    const ds = lock.map((l) => l.d).filter((d) => d != null);
+    ok('no wobble: headers stay locked to the tree while dragging', ds.length > 5 && Math.max(...ds) - Math.min(...ds) < 1.01, ds.map((d) => d.toFixed(1)).join(','));
+    // Names that are pinned (sitting at the left edge) in two frames in a row
+    // must not move between those frames.
+    let pinnedPairs = 0;
+    let worst = 0;
+    for (let i = 1; i < lock.length; i++) {
+      for (const [name, xNow] of Object.entries(lock[i].pinned)) {
+        const xPrev = lock[i - 1].pinned[name];
+        if (xPrev == null) continue;
+        // Pinned in both frames (a name arriving at the edge may still move
+        // the last fraction of a step, which is correct).
+        if (Math.abs(xPrev - 10) < 0.35 && Math.abs(xNow - 10) < 0.35) {
+          pinnedPairs++;
+          worst = Math.max(worst, Math.abs(xNow - xPrev));
+        }
+      }
+    }
+    ok('no wobble: names pinned to the left edge hold still', pinnedPairs > 5 && worst < 0.6, `${pinnedPairs} pinned pairs, worst move ${worst.toFixed(2)}px`);
+
     // Inertia: a quick flick keeps gliding after the finger lifts, then stops.
     await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fit').click());
     await wait(500);
@@ -400,11 +447,20 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     await p.evaluate(() => document.querySelector('.panel__close')?.click());
     await wait(200);
     const kq = (await tf(p)).k;
-    await p.touchscreen.tap(200, 600);
+    // Double tap on an empty spot, away from any name or header.
+    const spot = await p.evaluate(() => {
+      for (let y = 380; y < 720; y += 14) for (let x = 120; x < 380; x += 14) {
+        const e = document.elementFromPoint(x, y);
+        if (e && !e.closest('.name, .section__head, .panel, .tree__tools, .tree__axis') && e.closest('.tree')) return [x, y];
+      }
+      return [300, 700];
+    });
+    await p.touchscreen.tap(spot[0], spot[1]);
     await wait(80);
-    await p.touchscreen.tap(200, 600);
+    await p.touchscreen.tap(spot[0], spot[1]);
     await wait(400);
-    ok('phone: double tap does not zoom', Math.abs((await tf(p)).k - kq) < 0.001);
+    const kd = (await tf(p)).k;
+    ok('phone: double tap does not zoom', Math.abs(kd - kq) < 0.001, `${kq.toFixed(2)} → ${kd.toFixed(2)}`);
     await p.evaluate(() => document.querySelector('.panel__close')?.click());
     await wait(200);
     // Go to the 'today' end first, so there is room to glide back in time.
