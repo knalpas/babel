@@ -1,4 +1,7 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { select } from 'd3-selection'
+import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom'
+import 'd3-transition'
 import type { WordId } from '../types'
 import { byId, childrenOf, isAlive, lineage } from '../data'
 import { wordFor } from '../data/words'
@@ -15,7 +18,7 @@ type Props = {
 }
 
 const AXIS_H = 32
-const MAX_TRACK = 9000
+/** Phones lay history out over this many pixels, about three screens. */
 const PHONE_TRACK = 1150
 const PANEL_W = 412
 
@@ -27,219 +30,114 @@ function descendants(id: string, out = new Set<string>()): Set<string> {
   return out
 }
 
+/**
+ * Pan and zoom work like the first version of Babel, which behaved well on
+ * phones: d3-zoom owns every gesture. One finger (or a mouse drag) pans in any
+ * direction, two fingers pinch, a plain wheel or trackpad scrolls, ctrl/⌘ +
+ * wheel zooms. The drawing is one transformed group, so a gesture only changes
+ * a single attribute.
+ */
 export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }: Props) {
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const zoomRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null)
+  const [t, setT] = useState<ZoomTransform>(zoomIdentity)
+  const tRef = useRef(t)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
-  const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1200 : window.innerWidth))
-  const [trackW, setTrackW] = useState<number | null>(null)
-  const [scrollLeft, setScrollLeft] = useState(0)
-  const anchor = useRef<{ f: number; px: number } | null>(null)
-  const touchTap = useRef(false)
+  const [size, setSize] = useState(() => ({
+    w: typeof window === 'undefined' ? 1200 : window.innerWidth,
+    h: typeof window === 'undefined' ? 800 : window.innerHeight,
+  }))
   const pendingFocus = useRef(false)
 
   const layout = useMemo(() => buildLayout(collapsed), [collapsed])
-  const isPhone = vw < 760
-  // "Fit" shows all of history on screen, on phones too.
-  const fitW = Math.max(240, vw - PAD_L - PAD_R - 8)
-  const minTrack = Math.min(700, fitW)
-  // Open on the whole tree; pinch, + or ctrl-scroll to look closer.
-  // Desktop opens on all of history. Phones open stretched to a readable
-  // width, so the tree can be swiped left and right straight away.
-  const tw = trackW ?? (isPhone ? Math.max(fitW, PHONE_TRACK) : fitW)
-  const x = useMemo(() => makeX(tw), [tw])
-  const twRef = useRef(tw)
-  const xRef = useRef(x)
-  twRef.current = tw
-  xRef.current = x
-  // Room to scroll the far end of history out from under the detail panel.
-  const width = PAD_L + tw + PAD_R + (selectedId && !isPhone ? PANEL_W : 0)
+  const isPhone = size.w < 760
+  // Desktop: all of history fits the screen at 100 %. Phone: readable at 100 %.
+  const track = isPhone ? PHONE_TRACK : Math.max(700, size.w - PAD_L - PAD_R - 8)
+  const x = useMemo(() => makeX(track), [track])
+  const chartW = PAD_L + track + PAD_R
+  const fitK = Math.min(1, size.w / chartW)
 
-  // Viewport width, for fitting and the phone layout.
   useEffect(() => {
-    const el = scrollRef.current
+    const el = rootRef.current
     if (!el) return
-    const ro = new ResizeObserver(() => setVw(el.clientWidth))
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }))
     ro.observe(el)
-    setVw(el.clientWidth)
     return () => ro.disconnect()
   }, [])
 
-  // Track horizontal scroll (throttled to frames) so names can stay readable.
+  // Set up gestures once.
   useEffect(() => {
-    const el = scrollRef.current
+    const el = rootRef.current
     if (!el) return
-    let raf = 0
-    const onScroll = () => {
-      if (raf) return
-      raf = requestAnimationFrame(() => {
-        raf = 0
-        setScrollLeft(el.scrollLeft)
+    const z = zoom<HTMLDivElement, unknown>()
+      .scaleExtent([0.2, 4])
+      .filter((e: Event) => {
+        if (e.type === 'wheel') return (e as WheelEvent).ctrlKey || (e as WheelEvent).metaKey
+        if (e.type === 'dblclick') return false
+        return !(e as MouseEvent).button
       })
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
+      .on('zoom', (e) => {
+        tRef.current = e.transform
+        setT(e.transform)
+      })
+    zoomRef.current = z
+    const sel = select(el)
+    sel.call(z)
+    // A plain wheel or two-finger trackpad swipe pans, like scrolling a page.
+    sel.on(
+      'wheel.pan',
+      (e: WheelEvent) => {
+        if (e.ctrlKey || e.metaKey) return
+        e.preventDefault()
+        z.translateBy(sel, -e.deltaX / tRef.current.k, -e.deltaY / tRef.current.k)
+      },
+      { passive: false },
+    )
     return () => {
-      el.removeEventListener('scroll', onScroll)
-      cancelAnimationFrame(raf)
+      sel.on('.zoom', null).on('wheel.pan', null)
     }
   }, [])
 
-  /** Stretch time, keeping the moment under `px` (viewport x) in place. */
-  const zoomTo = useCallback(
-    (next: number, px?: number) => {
-      const el = scrollRef.current
-      if (!el) return
-      const clamped = Math.round(Math.min(MAX_TRACK, Math.max(minTrack, next)))
-      const at = px ?? el.clientWidth / 2
-      // Measure against the width on screen now, not a stale render.
-      if (!anchor.current) anchor.current = { f: (el.scrollLeft + at - PAD_L) / twRef.current, px: at }
-      else anchor.current.px = at
-      setTrackW(clamped)
-    },
-    [minTrack],
-  )
-
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (previewOn.current) setPreview(null)
-    const a = anchor.current
-    if (!el || !a) return
-    anchor.current = null
-    el.scrollLeft = PAD_L + a.f * tw - a.px
-    setScrollLeft(el.scrollLeft)
-  }, [tw])
-
-  // Ctrl / ⌘ + wheel (and trackpad pinch, which arrives as ctrl+wheel) zooms time.
+  // Keep the tree on screen: panning stops at its edges (with room to move the
+  // far end of history out from under the detail panel on desktop).
   useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return
-      e.preventDefault()
-      const r = el.getBoundingClientRect()
-      zoomTo(twRef.current * Math.exp(-e.deltaY * 0.01), e.clientX - r.left)
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [zoomTo])
+    const el = rootRef.current
+    const z = zoomRef.current
+    if (!el || !z) return
+    const extra = selectedId && !isPhone ? PANEL_W : 0
+    z.translateExtent([
+      [-16, -AXIS_H - 8],
+      [chartW + 16 + extra, layout.height + 80],
+    ])
+    z.scaleExtent([Math.min(0.3, fitK * 0.95), 4])
+    select(el).call(z.translateBy, 0, 0)
+  }, [chartW, fitK, layout.height, selectedId, isPhone])
 
-  // Two-finger pinch on phones and tablets stretches or squeezes time. While
-  // the fingers move, the drawing is only stretched with a CSS transform (cheap
-  // and smooth); the real re-layout happens once, when the pinch ends.
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const axisRef = useRef<SVGSVGElement>(null)
-  const previewOn = useRef(false)
-  const setPreview = useCallback((r: number | null, origin = 0) => {
-    for (const n of [bodyRef.current, axisRef.current]) {
-      if (!n) continue
-      n.style.transformOrigin = r == null ? '' : `${origin}px 0`
-      n.style.transform = r == null ? '' : `scaleX(${r})`
-    }
-    previewOn.current = r != null
-  }, [])
-
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    type Pinch = { w0: number; mid: number; origin: number; r: number }
-    let pinch: Pinch | null = null
-
-    const begin = (clientX: number) => {
-      const m = clientX - el.getBoundingClientRect().left
-      pinch = { w0: twRef.current, mid: m, origin: el.scrollLeft + m, r: 1 }
-    }
-    const update = (ratio: number) => {
-      if (!pinch) return
-      pinch.r = Math.min(MAX_TRACK / pinch.w0, Math.max(minTrack / pinch.w0, ratio))
-      setPreview(pinch.r, pinch.origin)
-    }
-    const finish = () => {
-      if (!pinch) return
-      const { w0, r, mid: m, origin } = pinch
-      pinch = null
-      if (Math.abs(r - 1) < 0.01) {
-        setPreview(null)
-        return
-      }
-      // Keep the moment under the fingers in place; the preview is cleared
-      // in the same frame the new layout lands (see the layout effect above).
-      anchor.current = { f: (origin - PAD_L) / w0, px: m }
-      setTrackW(Math.round(w0 * r))
-    }
-
-    // Safari on iPhone and iPad reports pinches as its own gesture events,
-    // with the zoom factor ready-made in `scale`. Everywhere else, measure the
-    // distance between the two fingers.
-    const usesGestures = 'ongesturestart' in window
-    type GestureLike = Event & { scale?: number; clientX?: number }
-
-    const onGStart = (e: Event) => {
-      e.preventDefault()
-      const g = e as GestureLike
-      begin(g.clientX ?? el.getBoundingClientRect().left + el.clientWidth / 2)
-    }
-    const onGChange = (e: Event) => {
-      e.preventDefault()
-      update((e as GestureLike).scale ?? 1)
-    }
-    const onGEnd = (e: Event) => {
-      e.preventDefault()
-      finish()
-    }
-
-    let d0 = 1
-    const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
-    const onStart = (e: TouchEvent) => {
-      if (usesGestures || e.touches.length !== 2) return
-      e.preventDefault()
-      d0 = Math.max(1, dist(e.touches))
-      begin((e.touches[0].clientX + e.touches[1].clientX) / 2)
-    }
-    const onMove = (e: TouchEvent) => {
-      if (usesGestures || !pinch || e.touches.length !== 2) return
-      if (e.cancelable) e.preventDefault()
-      update(dist(e.touches) / d0)
-    }
-    const onEnd = (e: TouchEvent) => {
-      if (usesGestures || e.touches.length >= 2) return
-      finish()
-    }
-
-    const on: [string, EventListener, AddEventListenerOptions?][] = [
-      ['gesturestart', onGStart, { passive: false }],
-      ['gesturechange', onGChange, { passive: false }],
-      ['gestureend', onGEnd, { passive: false }],
-      ['touchstart', onStart as EventListener, { passive: false }],
-      ['touchmove', onMove as EventListener, { passive: false }],
-      ['touchend', onEnd as EventListener],
-      ['touchcancel', onEnd as EventListener],
-    ]
-    for (const [t, f, o] of on) el.addEventListener(t, f, o)
-    return () => {
-      for (const [t, f] of on) el.removeEventListener(t, f)
-    }
-  }, [minTrack, setPreview])
-
-  // Open with the current year in view.
+  // Open with the chosen year in view.
   const opened = useRef(false)
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el || opened.current || el.clientWidth === 0) return
+  useEffect(() => {
+    const el = rootRef.current
+    const z = zoomRef.current
+    if (!el || !z || opened.current || el.clientWidth === 0) return
     opened.current = true
-    if (width > el.clientWidth) el.scrollLeft = x(year) - el.clientWidth * 0.5
-    setScrollLeft(el.scrollLeft)
+    const vw = el.clientWidth
+    const minTx = vw - (chartW + 10)
+    const tx = Math.max(Math.min(0, minTx), Math.min(0, vw * 0.5 - x(year)))
+    select(el).call(z.transform, zoomIdentity.translate(tx, AXIS_H))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vw])
+  }, [size.w])
 
   // Keep the year line on screen while scrubbing or playing.
-  // Only the year moving triggers this, so zooming never snaps back to it.
   useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const xs = xRef.current(year)
-    const m = Math.min(80, el.clientWidth * 0.12)
-    if (xs < el.scrollLeft + m) el.scrollLeft = xs - m
-    else if (xs > el.scrollLeft + el.clientWidth - m) el.scrollLeft = xs - el.clientWidth + m
-    setScrollLeft(el.scrollLeft)
+    const el = rootRef.current
+    const z = zoomRef.current
+    if (!el || !z) return
+    const vw = el.clientWidth - (selectedId && !isPhone ? PANEL_W : 0)
+    const sx = tRef.current.applyX(x(year))
+    const m = Math.min(80, vw * 0.12)
+    if (sx < m) z.translateBy(select(el), (m - sx) / tRef.current.k, 0)
+    else if (sx > vw - m) z.translateBy(select(el), (vw - m - sx) / tRef.current.k, 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [year])
 
   // Bring the selected language into view, unfolding its family if needed.
@@ -256,16 +154,16 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
   }, [focusSeq, selectedId])
 
   useEffect(() => {
-    const el = scrollRef.current
-    if (!pendingFocus.current || !el || !selectedId) return
+    const el = rootRef.current
+    const z = zoomRef.current
+    if (!pendingFocus.current || !el || !z || !selectedId) return
     const row = layout.rowById.get(selectedId)
     if (!row) return
     pendingFocus.current = false
-    const left = Math.max(0, x(row.lang.start) - (isPhone ? 24 : 120))
-    const top = row.y - (isPhone ? el.clientHeight * 0.16 : el.clientHeight * 0.38)
-    // Glide for short hops; jump straight there across long distances.
-    const far = Math.abs(top - el.scrollTop) > el.clientHeight * 2
-    el.scrollTo({ left, top: Math.max(0, top), behavior: far ? 'auto' : 'smooth' })
+    const k = Math.max(tRef.current.k, 0.85)
+    const tx = (isPhone ? 24 : 120) - x(row.lang.start) * k
+    const ty = (isPhone ? el.clientHeight * 0.18 : el.clientHeight * 0.38) - row.y * k
+    select(el).transition().duration(550).call(z.transform, zoomIdentity.translate(tx, ty).scale(k))
   }, [layout, selectedId, focusSeq, x, isPhone])
 
   const related = useMemo(() => {
@@ -287,145 +185,152 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
     setCollapsed(allFolded ? new Set() : new Set(layout.sections.map((s) => s.group.id)))
   }
 
-  // Scrub by pressing or dragging along the axis.
-  function yearAt(clientX: number): number {
-    const el = scrollRef.current!
-    const px = clientX - el.getBoundingClientRect().left + el.scrollLeft
-    return clampYear(fractionToYear((px - PAD_L) / tw))
+  function zoomBy(f: number) {
+    const el = rootRef.current
+    const z = zoomRef.current
+    if (!el || !z) return
+    select(el).transition().duration(250).call(z.scaleBy, f, [el.clientWidth / 2, el.clientHeight / 2])
+  }
+
+  function fit() {
+    const el = rootRef.current
+    const z = zoomRef.current
+    if (!el || !z) return
+    // Whole width of history on screen, keeping the rows that are in view.
+    const top = tRef.current.invertY(AXIS_H)
+    select(el)
+      .transition()
+      .duration(350)
+      .call(z.transform, zoomIdentity.translate((el.clientWidth - chartW * fitK) / 2, AXIS_H - top * fitK).scale(fitK))
+  }
+
+  function axisYear(clientX: number): number {
+    const el = rootRef.current!
+    const px = tRef.current.invertX(clientX - el.getBoundingClientRect().left)
+    return clampYear(fractionToYear((px - PAD_L) / track))
   }
 
   const yearX = x(year)
-  // Drop ticks that would crowd their neighbours (or the "Today" label).
+  // Axis ticks in screen space, thinned so labels never collide.
   const ticks = useMemo(() => {
     const out: number[] = []
     let last = -Infinity
-    for (const t of AXIS_TICKS) {
-      if (x(t) - last < 56 || x(MAX_YEAR) - x(t) < 56) continue
-      out.push(t)
-      last = x(t)
+    const today = t.applyX(x(MAX_YEAR))
+    for (const tick of AXIS_TICKS) {
+      const sx = t.applyX(x(tick))
+      if (sx - last < 56 || today - sx < 56) continue
+      out.push(tick)
+      last = sx
     }
     return out
-  }, [x])
+  }, [t, x])
+
+  // Names slide in 24-unit steps, so most pan frames re-render none of them.
+  const edge = Math.round(t.invertX(10) / 24) * 24
+  const viewTop = t.invertY(0)
+  const viewBottom = t.invertY(size.h)
 
   return (
-    <div className="tree">
-      <div ref={scrollRef} className="tree__scroll" onClick={() => onSelect(null)}>
-        <svg
-          ref={axisRef}
-          className="tree__axis"
-          width={width}
-          height={AXIS_H}
-          role="slider"
-          aria-label="Year on the tree"
-          aria-valuenow={year}
-          onPointerDown={(e) => {
-            touchTap.current = e.pointerType === 'touch'
-            // On touch screens a swipe here scrolls the tree; only a tap sets the year.
-            if (touchTap.current) return
-            e.currentTarget.setPointerCapture(e.pointerId)
-            onYear(yearAt(e.clientX))
-          }}
-          onPointerMove={(e) => {
-            if (e.currentTarget.hasPointerCapture(e.pointerId)) onYear(yearAt(e.clientX))
-          }}
-          onClick={(e) => {
-            e.stopPropagation()
-            if (touchTap.current) onYear(yearAt(e.clientX))
-          }}
-        >
-          <rect className="axis__bg" width={width} height={AXIS_H} />
-          {ticks.map((t) => (
-            <g key={t} transform={`translate(${x(t)},0)`} className="axis__tick">
-              <line y1={AXIS_H - 7} y2={AXIS_H} />
-              <text y={AXIS_H - 13}>{formatYearShort(t)}</text>
-            </g>
-          ))}
-          <g transform={`translate(${x(MAX_YEAR)},0)`} className="axis__tick">
-            <text y={AXIS_H - 13}>Today</text>
-          </g>
-          <g transform={`translate(${yearX},0)`} className="axis__now">
-            <path d={`M-6,${AXIS_H - 9}L6,${AXIS_H - 9}L0,${AXIS_H}z`} />
-          </g>
-        </svg>
+    <div ref={rootRef} className="tree" onClick={() => onSelect(null)}>
+      <svg className="tree__svg" width="100%" height="100%" role="img" aria-label="Time-scaled family tree of languages">
+        <g transform={t.toString()}>
+          <Grid x={x} height={layout.height} />
+          <Branches layout={layout} x={x} year={year} selectedId={selectedId} related={related} />
+          <line className="tree__year" x1={yearX} x2={yearX} y1={-4000} y2={layout.height + 4000} />
+          <Labels
+            layout={layout}
+            x={x}
+            year={year}
+            word={word}
+            selectedId={selectedId}
+            related={related}
+            edge={edge}
+            onSelect={onSelect}
+          />
+        </g>
+      </svg>
 
-        <div ref={bodyRef} className="tree__body" style={{ width, height: layout.height }}>
-          <svg className="tree__svg" width={width} height={layout.height} role="img" aria-label="Time-scaled family tree of languages">
-            <Grid x={x} height={layout.height} />
-            <Branches layout={layout} x={x} year={year} selectedId={selectedId} related={related} />
-            <line className="tree__year" x1={yearX} x2={yearX} y1={0} y2={layout.height} />
-            <Labels
-              layout={layout}
-              x={x}
-              year={year}
-              word={word}
-              selectedId={selectedId}
-              related={related}
-              scrollLeft={scrollLeft}
-              onSelect={onSelect}
-            />
-          </svg>
-
-          {layout.sections.map((s) => (
-            <div key={s.group.id} className="section" style={{ top: s.y0, height: HEADER_H }}>
-              <div className="section__head">
+      <div className="tree__heads">
+        {layout.sections
+          .filter((s) => s.y0 + HEADER_H > viewTop - 40 && s.y0 < viewBottom + 40)
+          .map((s) => (
+            <div
+              key={s.group.id}
+              className="section__head"
+              style={{ transform: `translate(0px, ${t.applyY(s.y0)}px) scale(${t.k})` }}
+            >
+              <button
+                type="button"
+                className={`section__btn${s.collapsed ? ' is-collapsed' : ''}`}
+                aria-expanded={!s.collapsed}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggle(s.group.id)
+                }}
+              >
+                <span className="section__chev" aria-hidden="true">
+                  ▾
+                </span>
+                <span className="dot" style={{ background: s.group.color }} />
+                <span className="section__label">{s.group.label}</span>
+                <span className="section__count">{s.count}</span>
+              </button>
+              {s.from && (
                 <button
                   type="button"
-                  className={`section__btn${s.collapsed ? ' is-collapsed' : ''}`}
-                  aria-expanded={!s.collapsed}
+                  className="section__from"
                   onClick={(e) => {
                     e.stopPropagation()
-                    toggle(s.group.id)
+                    onSelect(s.from!.id)
                   }}
                 >
-                  <span className="section__chev" aria-hidden="true">
-                    ▾
-                  </span>
-                  <span className="dot" style={{ background: s.group.color }} />
-                  <span className="section__label">{s.group.label}</span>
-                  <span className="section__count">{s.count}</span>
+                  from {s.from.name}
                 </button>
-                {s.from && (
-                  <button
-                    type="button"
-                    className="section__from"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onSelect(s.from!.id)
-                    }}
-                  >
-                    from {s.from.name}
-                  </button>
-                )}
-              </div>
+              )}
             </div>
           ))}
-        </div>
       </div>
 
-      <div className={`tree__tools${selectedId ? ' is-shifted' : ''}`}>
+      <svg
+        className="tree__axis"
+        width="100%"
+        height={AXIS_H}
+        role="slider"
+        aria-label="Year on the tree: tap to set"
+        aria-valuenow={year}
+        onClick={(e) => {
+          e.stopPropagation()
+          onYear(axisYear(e.clientX))
+        }}
+      >
+        <rect className="axis__bg" width="100%" height={AXIS_H} />
+        {ticks.map((tick) => (
+          <g key={tick} transform={`translate(${t.applyX(x(tick))},0)`} className="axis__tick">
+            <line y1={AXIS_H - 7} y2={AXIS_H} />
+            <text y={AXIS_H - 13}>{formatYearShort(tick)}</text>
+          </g>
+        ))}
+        <g transform={`translate(${t.applyX(x(MAX_YEAR))},0)`} className="axis__tick">
+          <text y={AXIS_H - 13}>Today</text>
+        </g>
+        <g transform={`translate(${t.applyX(yearX)},0)`} className="axis__now">
+          <path d={`M-6,${AXIS_H - 9}L6,${AXIS_H - 9}L0,${AXIS_H}z`} />
+        </g>
+      </svg>
+
+      <div className={`tree__tools${selectedId ? ' is-shifted' : ''}`} onClick={(e) => e.stopPropagation()}>
         <button type="button" onClick={toggleAll}>
           {allFolded ? 'Unfold all' : 'Fold all'}
         </button>
         <span className="tree__tools-sep" />
-        <button type="button" onClick={() => zoomTo(tw / 1.5)} aria-label="Compress time" title="Compress time">
+        <button type="button" onClick={() => zoomBy(1 / 1.4)} aria-label="Zoom out" title="Zoom out">
           −
         </button>
-        <input
-          id="tree-zoom"
-          className="tree__zoom"
-          type="range"
-          min={0}
-          max={1000}
-          step={1}
-          aria-label="Zoom the timeline"
-          value={Math.round((Math.log(tw / minTrack) / Math.log(MAX_TRACK / minTrack)) * 1000)}
-          onChange={(e) => zoomTo(minTrack * Math.pow(MAX_TRACK / minTrack, Number(e.target.value) / 1000))}
-        />
-        <button type="button" onClick={() => zoomTo(tw * 1.5)} aria-label="Stretch time" title="Stretch time">
-          +
-        </button>
-        <button type="button" onClick={() => zoomTo(fitW, 0)} title="Fit all of history">
+        <button type="button" onClick={fit} title="Fit all of history">
           Fit
+        </button>
+        <button type="button" onClick={() => zoomBy(1.4)} aria-label="Zoom in" title="Zoom in">
+          +
         </button>
       </div>
     </div>
@@ -568,7 +473,8 @@ const Branches = memo(function Branches({ layout, x, year, selectedId, related }
 
 type LabelProps = BranchProps & {
   word: WordId | null
-  scrollLeft: number
+  /** Left edge of the visible area, in drawing coordinates. */
+  edge: number
   onSelect: (id: string | null) => void
 }
 
@@ -579,8 +485,7 @@ const NAME_W = 7.6 // average px per character at the name size
  * Each row is memoised, so a scroll frame only re-renders the few names that
  * actually move.
  */
-function Labels({ layout, x, year, word, selectedId, related, scrollLeft, onSelect }: LabelProps) {
-  const edge = scrollLeft + 12
+const Labels = memo(function Labels({ layout, x, year, word, selectedId, related, edge, onSelect }: LabelProps) {
   return (
     <g>
       {layout.rows.map((r) => {
@@ -605,7 +510,7 @@ function Labels({ layout, x, year, word, selectedId, related, scrollLeft, onSele
       })}
     </g>
   )
-}
+})
 
 type LabelRowProps = {
   id: string

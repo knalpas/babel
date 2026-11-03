@@ -22,6 +22,11 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     await wait(900);
     return p;
   }
+  // Current pan/zoom of the tree drawing: { x, y, k }.
+  const tf = (p) => p.$eval('.tree__svg > g', (e) => {
+    const m = /translate\(([-\d.e]+),([-\d.e]+)\) scale\(([-\d.e]+)\)/.exec(e.getAttribute('transform'));
+    return m ? { x: +m[1], y: +m[2], k: +m[3] } : { x: 0, y: 0, k: 1 };
+  });
   const yearText = (p) => p.$eval('.timeline__year', (e) => e.textContent);
   const panelTitle = (p) => p.$eval('.panel__title', (e) => e.textContent).catch(() => null);
   const search = async (p, q) => {
@@ -39,7 +44,10 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     let p = await open('');
     ok('loads tree at 1000', (await yearText(p)) === '1000');
     ok('tree renders all 248 rows', (await p.$$eval('.name', (r) => r.length)) === 248);
-    ok('tree fits all of history on a desktop screen', await p.$eval('.tree__scroll', (e) => e.scrollWidth <= e.clientWidth + 1));
+    ok('tree fits all of history on a desktop screen', await p.evaluate(() => {
+      const r = document.querySelector('.tree__svg > g').getBoundingClientRect();
+      return r.width <= window.innerWidth + 1;
+    }));
 
     // 2. Search
     await search(p, 'gael');
@@ -81,39 +89,69 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok('contact arcs drawn (3 for English)', (await p.$$eval('.contact-arc', (a) => a.length)) === 3);
     ok('unrelated rows are dimmed', (await p.$$eval('.name.is-dim', (a) => a.length)) > 100);
 
-    // 6. Native scrolling, folding, zoom
-    const tb = await (await p.$('.tree__scroll')).boundingBox();
-    const top0 = await p.$eval('.tree__scroll', (e) => e.scrollTop);
+    // 6. Pan, zoom, folding
+    const tb = await (await p.$('.tree')).boundingBox();
+    const t0 = await tf(p);
     await p.mouse.move(tb.x + 300, tb.y + 300);
     await p.mouse.wheel({ deltaY: 600 });
-    await wait(400);
-    ok('mouse wheel scrolls the tree', (await p.$eval('.tree__scroll', (e) => e.scrollTop)) > top0);
-    ok('axis stays pinned while scrolling', await p.$eval('.tree__axis', (e) => Math.abs(e.getBoundingClientRect().top - e.parentElement.getBoundingClientRect().top) < 2));
+    await wait(300);
+    const t1 = await tf(p);
+    ok('mouse wheel scrolls the tree down', t1.y < t0.y - 200, `${t0.y} → ${t1.y}`);
+    const t15 = await tf(p);
+    await p.mouse.move(tb.x + 500, tb.y + 400);
+    await p.mouse.down();
+    await p.mouse.move(tb.x + 650, tb.y + 250, { steps: 6 });
+    await p.mouse.up();
+    await wait(200);
+    const t2 = await tf(p);
+    ok('dragging pans both ways', t2.x > t15.x + 100 && t2.y < t15.y - 100, `${JSON.stringify(t15)} → ${JSON.stringify(t2)}`);
+    await p.mouse.wheel({ deltaY: -100000 });
+    await wait(300);
+    ok('panning stops at the top of the tree', Math.abs((await tf(p)).y - 32) < 12, 'y ' + (await tf(p)).y);
+    await p.mouse.wheel({ deltaX: -100000 });
+    await wait(300);
+    ok('panning stops at 4500 BC', (await tf(p)).x <= 16 && (await tf(p)).x > -2, 'x ' + (await tf(p)).x);
+    ok('axis stays pinned at the top', await p.$eval('.tree__axis', (e) => Math.abs(e.getBoundingClientRect().top - e.parentElement.getBoundingClientRect().top) < 2));
     const n0 = await p.$$eval('.name', (r) => r.length);
-    await p.evaluate(() => [...document.querySelectorAll('.section__btn')].find((b) => b.textContent.includes('Germanic')).click());
+    await p.evaluate(() => [...document.querySelectorAll('.section__btn')].find((b) => b.textContent.includes('Hellenic')).click());
     await wait(300);
     const n1 = await p.$$eval('.name', (r) => r.length);
-    ok('folding Germanic hides its rows', n1 < n0, `${n0} → ${n1}`);
+    ok('folding a family hides its rows', n1 < n0, `${n0} → ${n1}`);
     await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fold all').click());
     await wait(300);
     ok('Fold all leaves only headers', (await p.$$eval('.name', (r) => r.length)) === 0);
     await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Unfold all').click());
     await wait(300);
     ok('Unfold all restores rows', (await p.$$eval('.name', (r) => r.length)) === 248);
-    const w0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
+    const k0 = (await tf(p)).k;
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Zoom in"]').click());
+    await wait(500);
+    ok('+ zooms in', (await tf(p)).k > k0 * 1.3, `${k0} → ${(await tf(p)).k}`);
+    const tz = await tf(p);
+    await p.mouse.move(tb.x + 300, tb.y + 300);
+    await p.mouse.wheel({ deltaX: 300 });
     await wait(300);
-    const w1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    ok('+ stretches time', w1 > w0 * 1.3, `${w0} → ${w1}`);
-    ok('stretched tree scrolls sideways', await p.$eval('.tree__scroll', (e) => e.scrollWidth > e.clientWidth));
-    const fs0 = await p.$eval('.name__text', (e) => getComputedStyle(e).fontSize);
-    ok('text size unchanged by zoom', fs0 === '15.5px', fs0);
+    ok('sideways wheel / trackpad pans in time', (await tf(p)).x < tz.x - 100, `${tz.x} → ${(await tf(p)).x}`);
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Zoom out"]').click());
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Zoom out"]').click());
+    await wait(500);
+    ok('− zooms out', (await tf(p)).k < k0);
+    await p.mouse.move(tb.x + 600, tb.y + 400);
+    await p.keyboard.down('Control');
+    await p.mouse.wheel({ deltaY: -200 });
+    await p.keyboard.up('Control');
+    await wait(300);
+    ok('ctrl + wheel zooms', (await tf(p)).k > k0 * 0.8);
     await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fit').click());
-    await wait(300);
-    ok('Fit returns to full view', (await p.$eval('.tree__svg', (e) => +e.getAttribute('width'))) <= w0 + 1);
-    await p.evaluate(() => [...document.querySelectorAll('.section__from')].find((b) => b.closest('.section').textContent.includes('Germanic')).click());
     await wait(600);
-    ok('“from …” link opens the parent', (await panelTitle(p)) === 'Proto-Indo-European');
+    ok('Fit shows all of history', await p.evaluate(() => document.querySelector('.tree__svg > g').getBoundingClientRect().width <= window.innerWidth + 2));
+    const fromName = await p.evaluate(() => {
+      const b = document.querySelector('.section__from');
+      b.click();
+      return b.textContent.replace(/^from /, '');
+    });
+    await wait(700);
+    ok('“from …” link opens the parent', (await panelTitle(p)) === fromName, fromName);
     await p.evaluate(() => {
       const r = [...document.querySelectorAll('.name')].find((g) => g.querySelector('.name__text').textContent === 'English');
       r.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -228,153 +266,88 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok('phone: panel is a bottom sheet', (await p.$eval('.panel', (e) => getComputedStyle(e).left)) === '0px');
     const tl = await (await p.$('.timeline')).boundingBox();
     ok('phone: timeline fully on screen', tl.y + tl.height <= 845);
-    ok('phone: selected row scrolled into view', await p.evaluate(() => {
-      const t = [...document.querySelectorAll('.name.is-selected')][0];
+    await wait(500);
+    ok('phone: selected row brought into view', await p.evaluate(() => {
+      const t = document.querySelector('.name.is-selected .name__text');
       const r = t && t.getBoundingClientRect();
-      return !!r && r.top > 0 && r.top < 844 && r.left > -5 && r.left < 390;
+      return !!r && r.top > 150 && r.top < 844 && r.left > -5 && r.left < 390;
     }));
-    await p.click('.panel__close');
-    await wait(200);
-    const pw0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    ok('phone: opens readable, wider than the screen', pw0 >= 390 * 2.5, 'width ' + pw0);
-    // Real two-finger pinch out, via the DevTools touch protocol.
+    await p.close();
+
+    // 14. Fresh phone load: real finger gestures.
+    p = await open('?year=1000', { width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
     const cdp = await p.createCDPSession();
-    const touch = async (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
-    await touch('touchStart', [[170, 600], [220, 600]]);
-    for (let i = 1; i <= 8; i++) await touch('touchMove', [[170 - i * 12, 600], [220 + i * 12, 600]]);
-    const mid = await p.evaluate(() => ({
-      t: document.querySelector('.tree__body').style.transform,
-      w: +document.querySelector('.tree__svg').getAttribute('width'),
-    }));
-    ok('phone: pinch previews smoothly without re-laying out', /scaleX/.test(mid.t) && mid.w === pw0, mid.t);
-    await touch('touchEnd', []);
-    await wait(400);
-    const pw1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    ok('phone: preview cleared once the pinch ends', (await p.$eval('.tree__body', (e) => e.style.transform)) === '');
-    ok('phone: pinching out stretches time', pw1 > pw0 * 2, `${pw0} → ${pw1}`);
-    ok('phone: pinch does not zoom the page', await p.evaluate(() => (window.visualViewport ? window.visualViewport.scale : 1) === 1));
-    await touch('touchStart', [[80, 600], [310, 600]]);
-    for (let i = 1; i <= 8; i++) await touch('touchMove', [[80 + i * 12, 600], [310 - i * 12, 600]]);
-    await touch('touchEnd', []);
-    await wait(400);
-    const pw2 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    ok('phone: pinching in squeezes time again', pw2 < pw1, `${pw1} → ${pw2}`);
-    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
-    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
-    await wait(300);
-    for (let i = 0; i < 6; i++) await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Compress time"]').click());
-    await wait(300);
-    ok('phone: − zooms all the way out to the screen', (await p.$eval('.tree__svg', (e) => +e.getAttribute('width'))) <= 392);
-    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
-    await wait(300);
-    await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fit').click());
-    await wait(300);
-    ok('phone: Fit zooms out to the whole tree', (await p.$eval('.tree__svg', (e) => +e.getAttribute('width'))) <= 392);
-    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
-    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
-    await wait(300);
-    // A real finger swipe across the tree scrolls it sideways.
-    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
-    await wait(300);
-    await p.evaluate(() => { document.querySelector('.tree__scroll').scrollLeft = 0; });
-    await wait(200);
-    const sl0 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
-    await touch('touchStart', [[300, 480]]);
-    for (let i = 1; i <= 10; i++) await touch('touchMove', [[300 - i * 20, 480]]);
-    await touch('touchEnd', []);
-    await wait(500);
-    ok('phone: finger swipe scrolls the tree sideways', (await p.$eval('.tree__scroll', (e) => e.scrollLeft)) > sl0 + 50);
-    // Swiping along the date axis scrolls too, rather than changing the year.
-    const yA = await yearText(p);
-    const sl1 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
+    const touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
+    const swipe = async ([x0, y0], [x1, y1]) => {
+      void 0;
+      await touch('touchStart', [[x0, y0]]);
+      for (let i = 1; i <= 12; i++) await touch('touchMove', [[x0 + ((x1 - x0) * i) / 12, y0 + ((y1 - y0) * i) / 12]]);
+      await touch('touchEnd', []);
+      await wait(300);
+    };
+    const pinch = async (gap0, gap1, y = 600, cx = 195) => {
+      await touch('touchStart', [[cx - gap0 / 2, y], [cx + gap0 / 2, y]]);
+      for (let i = 1; i <= 10; i++) {
+        const g = gap0 + ((gap1 - gap0) * i) / 10;
+        await touch('touchMove', [[cx - g / 2, y], [cx + g / 2, y]]);
+      }
+      await touch('touchEnd', []);
+      await wait(300);
+    };
+    const f0 = await tf(p);
+    ok('phone: opens readable (100 %) and wider than the screen', f0.k === 1 && (await p.evaluate(() => document.querySelector('.tree__svg > g').getBoundingClientRect().width)) > 390 * 2.5);
+    await swipe([320, 520], [60, 520]);
+    const f1 = await tf(p);
+    ok('phone: swipe left moves later in time', f1.x < f0.x - 150, `${f0.x} → ${f1.x}`);
+    await swipe([60, 520], [320, 520]);
+    const f2 = await tf(p);
+    ok('phone: swipe right moves earlier in time', f2.x > f1.x + 150, `${f1.x} → ${f2.x}`);
+    await swipe([200, 700], [200, 300]);
+    const f3 = await tf(p);
+    ok('phone: swipe up scrolls down the families', f3.y < f2.y - 200, `${f2.y} → ${f3.y}`);
+    await swipe([300, 700], [100, 400]);
+    const f4 = await tf(p);
+    ok('phone: diagonal swipe pans both ways at once', f4.x < f3.x - 100 && f4.y < f3.y - 150);
     const ab = await (await p.$('.tree__axis')).boundingBox();
-    await touch('touchStart', [[300, ab.y + 15]]);
-    for (let i = 1; i <= 10; i++) await touch('touchMove', [[300 - i * 15, ab.y + 15]]);
-    await touch('touchEnd', []);
-    await wait(500);
-    ok('phone: swiping the axis scrolls and keeps the year', (await yearText(p)) === yA && (await p.$eval('.tree__scroll', (e) => e.scrollLeft)) > sl1, yA + ' → ' + (await yearText(p)));
+    const yA = await yearText(p);
+    await swipe([300, ab.y + 15], [100, ab.y + 15]);
+    ok('phone: swiping across the axis pans, year unchanged', (await yearText(p)) === yA && (await tf(p)).x < f4.x - 100);
     await p.touchscreen.tap(200, ab.y + 15);
     await wait(300);
     ok('phone: tapping the axis sets the year', (await yearText(p)) !== yA, await yearText(p));
-    await p.evaluate(() => { document.querySelector('.tree__scroll').scrollLeft = 0; });
-    await wait(200);
-    const sc = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
-    await p.evaluate(() => { const e = document.querySelector('.tree__scroll'); e.scrollLeft += 300; });
-    await wait(300);
-    ok('phone: tree scrolls sideways', (await p.$eval('.tree__scroll', (e) => e.scrollLeft)) > sc);
-    ok('phone: names stay readable after sideways scroll', await p.evaluate(() => {
-      return [...document.querySelectorAll('.name__text')].every((t) => {
-        const r = t.getBoundingClientRect();
-        if (r.bottom < 240 || r.top > 1300 || r.right < 0) return true;
-        return r.left > -2;
-      });
-    }));
-    // Zoom slider: no gestures needed.
-    const setSlider = (v) => p.evaluate((v) => {
-      const el = document.querySelector('#tree-zoom');
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(v));
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }, v);
-    await setSlider(0);
-    await wait(300);
-    const zs0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    await setSlider(700);
-    await wait(300);
-    const zs1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    ok('phone: zoom slider out fits the screen, in stretches', zs0 <= 392 && zs1 > zs0 * 3, `${zs0} → ${zs1}`);
-    ok('phone: zoom controls fit on screen', await p.evaluate(() => {
+    await pinch(200, 60);
+    const g1 = await tf(p);
+    ok('phone: pinch in zooms out', g1.k < 0.6, 'k ' + g1.k.toFixed(2));
+    await pinch(200, 60);
+    await pinch(200, 60);
+    ok('phone: can zoom out to see all of history', await p.evaluate(() => document.querySelector('.tree__svg > g').getBoundingClientRect().width <= 390));
+    await pinch(60, 250);
+    ok('phone: pinch out zooms back in', (await tf(p)).k > g1.k);
+    ok('phone: pinch never zooms the page itself', await p.evaluate(() => (window.visualViewport ? window.visualViewport.scale : 1) === 1));
+    await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fit').click());
+    await wait(600);
+    ok('phone: Fit shows all of history', await p.evaluate(() => document.querySelector('.tree__svg > g').getBoundingClientRect().width <= 392));
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Zoom in"]').click());
+    await wait(500);
+    ok('phone: + zooms in after Fit', (await tf(p)).k > 0.4);
+    ok('phone: zoom buttons on screen', await p.evaluate(() => {
       const r = document.querySelector('.tree__tools').getBoundingClientRect();
       return r.left >= 0 && r.right <= 390;
     }));
-    await p.close();
-
-    // 14. Fresh phone load: swipe left and right straight away, no zooming.
-    p = await open('?year=1000', { width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
-    const cdp2 = await p.createCDPSession();
-    const swipe = async (x0, x1, y) => {
-      const pts = (x) => [{ x, y, id: 0 }];
-      await cdp2.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pts(x0) });
-      for (let i = 1; i <= 12; i++) await cdp2.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pts(x0 + ((x1 - x0) * i) / 12) });
-      await cdp2.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      await wait(600);
-    };
-    const f0 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
-    await swipe(320, 60, 520);
-    const f1 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
-    ok('fresh phone: swipe left moves later in time', f1 > f0 + 100, `${f0} → ${f1}`);
-    await swipe(60, 320, 520);
-    const f2 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
-    ok('fresh phone: swipe right moves earlier in time', f2 < f1 - 100, `${f1} → ${f2}`);
-    await p.close();
-
-    // 15. Safari's own pinch events (iPhone / iPad path), simulated.
-    p = await b.newPage();
-    await p.evaluateOnNewDocument(() => { window.ongesturestart = null; });
-    await p.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
-    await p.goto(base, { waitUntil: 'load' });
-    await wait(900);
-    const g0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    const gesture = (type, scale) => p.evaluate((type, scale) => {
-      const ev = new Event(type, { bubbles: true, cancelable: true });
-      ev.scale = scale; ev.clientX = 195;
-      document.querySelector('.tree__scroll').dispatchEvent(ev);
-      return ev.defaultPrevented;
-    }, type, scale);
-    const blocked = await gesture('gesturestart', 1);
-    await gesture('gesturechange', 0.5);
-    await gesture('gesturechange', 0.2);
-    ok('Safari pinch: previews while pinching', /scaleX/.test(await p.$eval('.tree__body', (e) => e.style.transform)));
-    await gesture('gestureend', 0.2);
-    await wait(400);
-    const g1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    ok('Safari pinch: pinching in zooms out to the screen', g1 <= 392 && g1 < g0, `${g0} → ${g1}`);
-    ok('Safari pinch: page zoom is blocked', blocked);
-    await gesture('gesturestart', 1);
-    await gesture('gesturechange', 4);
-    await gesture('gestureend', 4);
-    await wait(400);
-    const g2 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    ok('Safari pinch: pinching out zooms in', g2 > g1 * 3, `${g1} → ${g2}`);
+    const hb = await (await p.$('.section__btn')).boundingBox();
+    await p.touchscreen.tap(hb.x + 10, hb.y + hb.height / 2);
+    await wait(300);
+    ok('phone: family header still taps to fold', (await p.$$('.section__btn.is-collapsed')).length === 1);
+    await swipe([350, 600], [40, 600]);
+    await swipe([350, 600], [40, 600]);
+    await swipe([350, 600], [40, 600]);
+    await swipe([350, 600], [40, 600]);
+    const edgeInfo = await p.evaluate(() => {
+      const t = document.querySelector('.axis__tick:last-of-type, .tree__axis g.axis__tick:nth-last-of-type(1)');
+      const today = [...document.querySelectorAll('.tree__axis .axis__tick text')].find((e) => e.textContent === 'Today');
+      return today ? Math.round(today.getBoundingClientRect().left) : null;
+    });
+    ok('phone: swiping stops at today, never into empty space', edgeInfo != null && edgeInfo > 200 && edgeInfo < 390, 'Today label at x=' + edgeInfo);
     await p.close();
   } catch (e) {
     results.push('FAIL  test crashed: ' + e.message);

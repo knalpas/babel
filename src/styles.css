@@ -106,8 +106,6 @@ body {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
-  /* The tree and globe do their own zooming; never zoom the whole page. */
-  touch-action: pan-x pan-y;
 }
 
 button,
@@ -323,30 +321,30 @@ a {
 .tree {
   position: absolute;
   inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.tree__scroll {
+.tree:active {
+  cursor: grabbing;
+}
+
+.tree__svg {
   position: absolute;
   inset: 0;
-  overflow: auto;
-  /* One-finger panning stays native; two-finger pinch is ours (time zoom). */
-  touch-action: pan-x pan-y;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-color: var(--line-strong) transparent;
+  display: block;
 }
 
 .tree__axis {
-  position: sticky;
+  position: absolute;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 3;
   display: block;
-  cursor: ew-resize;
-}
-
-.tree__body,
-.tree__axis {
-  transform-origin: 0 0;
+  cursor: pointer;
 }
 
 .axis__bg {
@@ -369,25 +367,17 @@ a {
   fill: var(--accent);
 }
 
-.tree__body {
-  position: relative;
-}
-
-.tree__svg {
-  display: block;
-  user-select: none;
-}
-
 .grid line {
   stroke: var(--line);
   stroke-dasharray: 2 6;
 }
 
-.section {
+.tree__heads {
   position: absolute;
-  left: 0;
-  right: 0;
+  inset: 0;
+  overflow: hidden;
   pointer-events: none;
+  z-index: 2;
 }
 
 .section__rule {
@@ -395,13 +385,15 @@ a {
 }
 
 .section__head {
-  position: sticky;
+  position: absolute;
+  top: 0;
   left: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 100%;
+  height: 38px;
   padding: 0 18px 0 var(--gutter-l);
+  transform-origin: 0 0;
   pointer-events: auto;
   background: linear-gradient(90deg, var(--bg) 80%, transparent);
   white-space: nowrap;
@@ -653,33 +645,11 @@ a {
   background: var(--accent-soft);
 }
 
-.tree__zoom {
-  width: 96px;
-  height: 30px;
-  margin: 0 2px;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
 .tree__tools-sep {
   width: 1px;
   height: 18px;
   margin: 0 4px;
   background: var(--line-strong);
-}
-
-@media (max-width: 760px) {
-  .tree__tools {
-    left: var(--gutter-l);
-    right: var(--gutter-r);
-    justify-content: space-between;
-  }
-
-  .tree__zoom {
-    flex: 1;
-    min-width: 0;
-    width: auto;
-  }
 }
 
 @media (min-width: 761px) {
