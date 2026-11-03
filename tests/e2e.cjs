@@ -218,6 +218,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       if (await p.$('.panel__title')) opened++;
     }
     ok('every language opens a panel', opened === ids, `${opened}/${ids}`);
+    ok('every living language has a leaf', (await p.$$eval('.bar.is-living .bar__leaf', (l) => l.length)) === 127);
     await p.close();
 
     // 13. Phone
@@ -234,6 +235,38 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     }));
     await p.click('.panel__close');
     await wait(200);
+    const pw0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    ok('phone: opens on the whole tree (fits the screen)', pw0 <= 392, 'width ' + pw0);
+    // Real two-finger pinch out, via the DevTools touch protocol.
+    const cdp = await p.createCDPSession();
+    const touch = async (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
+    await touch('touchStart', [[170, 600], [220, 600]]);
+    for (let i = 1; i <= 8; i++) await touch('touchMove', [[170 - i * 12, 600], [220 + i * 12, 600]]);
+    await touch('touchEnd', []);
+    await wait(400);
+    const pw1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    ok('phone: pinching out stretches time', pw1 > pw0 * 2, `${pw0} → ${pw1}`);
+    ok('phone: pinch does not zoom the page', await p.evaluate(() => (window.visualViewport ? window.visualViewport.scale : 1) === 1));
+    await touch('touchStart', [[80, 600], [310, 600]]);
+    for (let i = 1; i <= 8; i++) await touch('touchMove', [[80 + i * 12, 600], [310 - i * 12, 600]]);
+    await touch('touchEnd', []);
+    await wait(400);
+    const pw2 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    ok('phone: pinching in squeezes time again', pw2 < pw1, `${pw1} → ${pw2}`);
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
+    await wait(300);
+    for (let i = 0; i < 6; i++) await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Compress time"]').click());
+    await wait(300);
+    ok('phone: − zooms all the way out to the screen', (await p.$eval('.tree__svg', (e) => +e.getAttribute('width'))) <= 392);
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
+    await wait(300);
+    await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fit').click());
+    await wait(300);
+    ok('phone: Fit zooms out to the whole tree', (await p.$eval('.tree__svg', (e) => +e.getAttribute('width'))) <= 392);
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Stretch time"]').click());
+    await wait(300);
     const sc = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
     await p.evaluate(() => { const e = document.querySelector('.tree__scroll'); e.scrollLeft += 300; });
     await wait(300);
