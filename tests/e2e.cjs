@@ -309,9 +309,13 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const f4 = await tf(p);
     ok('phone: diagonal swipe pans both ways at once', f4.x < f3.x - 100 && f4.y < f3.y - 150);
     const ab = await (await p.$('.tree__axis')).boundingBox();
+    await swipe([60, 520], [340, 520]);
+    await swipe([60, 520], [340, 520]);
+    await wait(1200);
     const yA = await yearText(p);
+    const fa = await tf(p);
     await swipe([300, ab.y + 15], [100, ab.y + 15]);
-    ok('phone: swiping across the axis pans, year unchanged', (await yearText(p)) === yA && (await tf(p)).x < f4.x - 100);
+    ok('phone: swiping across the axis pans, year unchanged', (await yearText(p)) === yA && (await tf(p)).x < fa.x - 100, `${fa.x.toFixed(0)} → ${(await tf(p)).x.toFixed(0)}`);
     await p.touchscreen.tap(200, ab.y + 15);
     await wait(300);
     ok('phone: tapping the axis sets the year', (await yearText(p)) !== yA, await yearText(p));
@@ -333,6 +337,60 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok('phone: zoom buttons on screen', await p.evaluate(() => {
       const r = document.querySelector('.tree__tools').getBoundingClientRect();
       return r.left >= 0 && r.right <= 390;
+    }));
+    // Inertia: a quick flick keeps gliding after the finger lifts, then stops.
+    await p.evaluate(() => [...document.querySelectorAll('.tree__tools button')].find((b) => b.textContent === 'Fit').click());
+    await wait(500);
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Zoom in"]').click());
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Zoom in"]').click());
+    await p.evaluate(() => document.querySelector('.tree__tools button[aria-label="Zoom in"]').click());
+    await wait(500);
+    const flick = async (dx, dy) => {
+      await touch('touchStart', [[200, 600]]);
+      for (let i = 1; i <= 6; i++) {
+        await touch('touchMove', [[200 + (dx * i) / 6, 600 + (dy * i) / 6]]);
+        await wait(12);
+      }
+      await touch('touchEnd', []);
+    };
+    await flick(0, -150);
+    const i0 = await tf(p);
+    await wait(450);
+    const i1 = await tf(p);
+    ok('phone: flick keeps gliding after the finger lifts (inertia)', i1.y < i0.y - 40, `${i0.y.toFixed(0)} → ${i1.y.toFixed(0)}`);
+    await wait(1800);
+    const i2 = await tf(p);
+    await wait(300);
+    ok('phone: the glide slows to a stop', Math.abs((await tf(p)).y - i2.y) < 1);
+    await flick(0, -150);
+    await wait(60);
+    await touch('touchStart', [[200, 600]]);
+    await wait(30);
+    const s0 = await tf(p);
+    await wait(300);
+    await touch('touchEnd', []);
+    ok('phone: touching again stops the glide', Math.abs((await tf(p)).y - s0.y) < 1);
+    // Go to the 'today' end first, so there is room to glide back in time.
+    for (let n = 0; n < 3; n++) { await flick(-300, 0); await wait(800); }
+    const s1 = await tf(p);
+    await flick(120, 0);
+    const s2 = await tf(p);
+    await wait(500);
+    const i3 = await tf(p);
+    ok('phone: sideways flick glides through time too', i3.x > s2.x + 30 && i3.x > s1.x + 120, `${s1.x.toFixed(0)} → ${s2.x.toFixed(0)} → ${i3.x.toFixed(0)}`);
+    for (let n = 0; n < 4; n++) {
+      await flick(0, 260);
+      await wait(700);
+    }
+    ok('phone: a glide stops at the top, first family below the date bar', await p.evaluate(() => {
+      const head = document.querySelector('.section__head');
+      const axis = document.querySelector('.tree__axis').getBoundingClientRect();
+      return head && head.getBoundingClientRect().top >= axis.bottom - 1 && head.textContent.includes('Indo-European');
+    }));
+    ok('phone: axis labels never pile up', await p.evaluate(() => {
+      const xs = [...document.querySelectorAll('.tree__axis text')].map((t) => t.getBoundingClientRect()).sort((a, b) => a.left - b.left);
+      const shown = xs.filter((r) => r.right > 0 && r.left < 390);
+      return shown.every((r, i) => i === 0 || r.left >= shown[i - 1].right - 1) && shown.every((r) => r.left >= 0 && r.right <= 390);
     }));
     const hb = await (await p.$('.section__btn')).boundingBox();
     await p.touchscreen.tap(hb.x + 10, hb.y + hb.height / 2);
