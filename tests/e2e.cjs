@@ -236,7 +236,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     await p.click('.panel__close');
     await wait(200);
     const pw0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
-    ok('phone: opens on the whole tree (fits the screen)', pw0 <= 392, 'width ' + pw0);
+    ok('phone: opens readable, wider than the screen', pw0 >= 390 * 2.5, 'width ' + pw0);
     // Real two-finger pinch out, via the DevTools touch protocol.
     const cdp = await p.createCDPSession();
     const touch = async (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
@@ -309,6 +309,72 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         return r.left > -2;
       });
     }));
+    // Zoom slider: no gestures needed.
+    const setSlider = (v) => p.evaluate((v) => {
+      const el = document.querySelector('#tree-zoom');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(v));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, v);
+    await setSlider(0);
+    await wait(300);
+    const zs0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    await setSlider(700);
+    await wait(300);
+    const zs1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    ok('phone: zoom slider out fits the screen, in stretches', zs0 <= 392 && zs1 > zs0 * 3, `${zs0} → ${zs1}`);
+    ok('phone: zoom controls fit on screen', await p.evaluate(() => {
+      const r = document.querySelector('.tree__tools').getBoundingClientRect();
+      return r.left >= 0 && r.right <= 390;
+    }));
+    await p.close();
+
+    // 14. Fresh phone load: swipe left and right straight away, no zooming.
+    p = await open('?year=1000', { width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    const cdp2 = await p.createCDPSession();
+    const swipe = async (x0, x1, y) => {
+      const pts = (x) => [{ x, y, id: 0 }];
+      await cdp2.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pts(x0) });
+      for (let i = 1; i <= 12; i++) await cdp2.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pts(x0 + ((x1 - x0) * i) / 12) });
+      await cdp2.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await wait(600);
+    };
+    const f0 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
+    await swipe(320, 60, 520);
+    const f1 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
+    ok('fresh phone: swipe left moves later in time', f1 > f0 + 100, `${f0} → ${f1}`);
+    await swipe(60, 320, 520);
+    const f2 = await p.$eval('.tree__scroll', (e) => e.scrollLeft);
+    ok('fresh phone: swipe right moves earlier in time', f2 < f1 - 100, `${f1} → ${f2}`);
+    await p.close();
+
+    // 15. Safari's own pinch events (iPhone / iPad path), simulated.
+    p = await b.newPage();
+    await p.evaluateOnNewDocument(() => { window.ongesturestart = null; });
+    await p.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    await p.goto(base, { waitUntil: 'load' });
+    await wait(900);
+    const g0 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    const gesture = (type, scale) => p.evaluate((type, scale) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      ev.scale = scale; ev.clientX = 195;
+      document.querySelector('.tree__scroll').dispatchEvent(ev);
+      return ev.defaultPrevented;
+    }, type, scale);
+    const blocked = await gesture('gesturestart', 1);
+    await gesture('gesturechange', 0.5);
+    await gesture('gesturechange', 0.2);
+    ok('Safari pinch: previews while pinching', /scaleX/.test(await p.$eval('.tree__body', (e) => e.style.transform)));
+    await gesture('gestureend', 0.2);
+    await wait(400);
+    const g1 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    ok('Safari pinch: pinching in zooms out to the screen', g1 <= 392 && g1 < g0, `${g0} → ${g1}`);
+    ok('Safari pinch: page zoom is blocked', blocked);
+    await gesture('gesturestart', 1);
+    await gesture('gesturechange', 4);
+    await gesture('gestureend', 4);
+    await wait(400);
+    const g2 = await p.$eval('.tree__svg', (e) => +e.getAttribute('width'));
+    ok('Safari pinch: pinching out zooms in', g2 > g1 * 3, `${g1} → ${g2}`);
     await p.close();
   } catch (e) {
     results.push('FAIL  test crashed: ' + e.message);

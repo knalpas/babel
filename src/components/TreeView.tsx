@@ -16,6 +16,7 @@ type Props = {
 
 const AXIS_H = 32
 const MAX_TRACK = 9000
+const PHONE_TRACK = 1150
 const PANEL_W = 412
 
 function descendants(id: string, out = new Set<string>()): Set<string> {
@@ -42,7 +43,9 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
   const fitW = Math.max(240, vw - PAD_L - PAD_R - 8)
   const minTrack = Math.min(700, fitW)
   // Open on the whole tree; pinch, + or ctrl-scroll to look closer.
-  const tw = trackW ?? fitW
+  // Desktop opens on all of history. Phones open stretched to a readable
+  // width, so the tree can be swiped left and right straight away.
+  const tw = trackW ?? (isPhone ? Math.max(fitW, PHONE_TRACK) : fitW)
   const x = useMemo(() => makeX(tw), [tw])
   const twRef = useRef(tw)
   const xRef = useRef(x)
@@ -137,26 +140,20 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    type Pinch = { d0: number; w0: number; mid: number; origin: number; r: number }
+    type Pinch = { w0: number; mid: number; origin: number; r: number }
     let pinch: Pinch | null = null
-    const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
-    const mid = (t: TouchList) => (t[0].clientX + t[1].clientX) / 2 - el.getBoundingClientRect().left
-    const onStart = (e: TouchEvent) => {
-      if (e.touches.length !== 2) return
-      e.preventDefault()
-      const m = mid(e.touches)
-      pinch = { d0: Math.max(1, dist(e.touches)), w0: twRef.current, mid: m, origin: el.scrollLeft + m, r: 1 }
+
+    const begin = (clientX: number) => {
+      const m = clientX - el.getBoundingClientRect().left
+      pinch = { w0: twRef.current, mid: m, origin: el.scrollLeft + m, r: 1 }
     }
-    const onMove = (e: TouchEvent) => {
-      if (!pinch || e.touches.length !== 2) return
-      if (e.cancelable) e.preventDefault()
-      const lo = minTrack / pinch.w0
-      const hi = MAX_TRACK / pinch.w0
-      pinch.r = Math.min(hi, Math.max(lo, dist(e.touches) / pinch.d0))
+    const update = (ratio: number) => {
+      if (!pinch) return
+      pinch.r = Math.min(MAX_TRACK / pinch.w0, Math.max(minTrack / pinch.w0, ratio))
       setPreview(pinch.r, pinch.origin)
     }
-    const onEnd = (e: TouchEvent) => {
-      if (!pinch || e.touches.length >= 2) return
+    const finish = () => {
+      if (!pinch) return
       const { w0, r, mid: m, origin } = pinch
       pinch = null
       if (Math.abs(r - 1) < 0.01) {
@@ -164,19 +161,61 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
         return
       }
       // Keep the moment under the fingers in place; the preview is cleared
-      // in the same frame the new layout lands (see the layout effect below).
+      // in the same frame the new layout lands (see the layout effect above).
       anchor.current = { f: (origin - PAD_L) / w0, px: m }
       setTrackW(Math.round(w0 * r))
     }
-    el.addEventListener('touchstart', onStart, { passive: false })
-    el.addEventListener('touchmove', onMove, { passive: false })
-    el.addEventListener('touchend', onEnd)
-    el.addEventListener('touchcancel', onEnd)
+
+    // Safari on iPhone and iPad reports pinches as its own gesture events,
+    // with the zoom factor ready-made in `scale`. Everywhere else, measure the
+    // distance between the two fingers.
+    const usesGestures = 'ongesturestart' in window
+    type GestureLike = Event & { scale?: number; clientX?: number }
+
+    const onGStart = (e: Event) => {
+      e.preventDefault()
+      const g = e as GestureLike
+      begin(g.clientX ?? el.getBoundingClientRect().left + el.clientWidth / 2)
+    }
+    const onGChange = (e: Event) => {
+      e.preventDefault()
+      update((e as GestureLike).scale ?? 1)
+    }
+    const onGEnd = (e: Event) => {
+      e.preventDefault()
+      finish()
+    }
+
+    let d0 = 1
+    const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+    const onStart = (e: TouchEvent) => {
+      if (usesGestures || e.touches.length !== 2) return
+      e.preventDefault()
+      d0 = Math.max(1, dist(e.touches))
+      begin((e.touches[0].clientX + e.touches[1].clientX) / 2)
+    }
+    const onMove = (e: TouchEvent) => {
+      if (usesGestures || !pinch || e.touches.length !== 2) return
+      if (e.cancelable) e.preventDefault()
+      update(dist(e.touches) / d0)
+    }
+    const onEnd = (e: TouchEvent) => {
+      if (usesGestures || e.touches.length >= 2) return
+      finish()
+    }
+
+    const on: [string, EventListener, AddEventListenerOptions?][] = [
+      ['gesturestart', onGStart, { passive: false }],
+      ['gesturechange', onGChange, { passive: false }],
+      ['gestureend', onGEnd, { passive: false }],
+      ['touchstart', onStart as EventListener, { passive: false }],
+      ['touchmove', onMove as EventListener, { passive: false }],
+      ['touchend', onEnd as EventListener],
+      ['touchcancel', onEnd as EventListener],
+    ]
+    for (const [t, f, o] of on) el.addEventListener(t, f, o)
     return () => {
-      el.removeEventListener('touchstart', onStart)
-      el.removeEventListener('touchmove', onMove)
-      el.removeEventListener('touchend', onEnd)
-      el.removeEventListener('touchcancel', onEnd)
+      for (const [t, f] of on) el.removeEventListener(t, f)
     }
   }, [minTrack, setPreview])
 
@@ -371,11 +410,22 @@ export function TreeView({ year, word, selectedId, focusSeq, onSelect, onYear }:
         <button type="button" onClick={() => zoomTo(tw / 1.5)} aria-label="Compress time" title="Compress time">
           −
         </button>
-        <button type="button" onClick={() => zoomTo(fitW, 0)} title="Fit all of history">
-          Fit
-        </button>
+        <input
+          id="tree-zoom"
+          className="tree__zoom"
+          type="range"
+          min={0}
+          max={1000}
+          step={1}
+          aria-label="Zoom the timeline"
+          value={Math.round((Math.log(tw / minTrack) / Math.log(MAX_TRACK / minTrack)) * 1000)}
+          onChange={(e) => zoomTo(minTrack * Math.pow(MAX_TRACK / minTrack, Number(e.target.value) / 1000))}
+        />
         <button type="button" onClick={() => zoomTo(tw * 1.5)} aria-label="Stretch time" title="Stretch time">
           +
+        </button>
+        <button type="button" onClick={() => zoomTo(fitW, 0)} title="Fit all of history">
+          Fit
         </button>
       </div>
     </div>
